@@ -105,6 +105,9 @@ SiMuS.io/
    - ~~Fix de 413 Payload Too Large al buscar grupos con segmentos grandes~~ — **Resuelto en
      esta misma sesión** con batching de emails (`EMAIL_BATCH_SIZE = 800`), ver ADR 0006 addendum.
      Falta que el usuario lo confirme en Vercel.
+   - ~~Ventana de atribución trayendo 8 días en vez de 7~~ — **Resuelto en esta misma sesión**:
+     `addDaysISO(sendDate, 8)` -> `addDaysISO(sendDate, 7)` en `buildQuery()`, ver ADR 0006 addendum.
+     Falta que el usuario confirme en Vercel que los números bajan de forma consistente.
 0. **Usuario**: configurar `HS_PAT` (Private App Token de HubSpot) en `.env.local` para probar
    localmente con `vercel dev`, y en Vercel Project Settings -> Environment Variables para
    producción. Ver `.env.example` y ADR 0004.
@@ -289,6 +292,18 @@ grande desde este entorno de desarrollo (misma limitación de siempre, sin `verc
 puente) — el usuario debe confirmar en Vercel que "Buscar" ya no falla con 413. Detalle completo,
 incluida la tabla de mediciones y una nota sobre el límite de tiempo de ejecución de Vercel para
 segmentos muy grandes, en el addendum de **ADR 0006**.
+
+**Quinta actualización, mismo día — corrección de la ventana de atribución (7 días, no 8):** el
+usuario reportó que la consulta estaba trayendo datos con el día del envío MÁS 7 días (8 días en
+total), cuando la ventana debía ser de 7 días en total contando el día del envío. Causa: el límite
+superior exclusivo del rango se calculaba con `addDaysISO(sendDate, 8)`, que en la práctica cubre
+`sendDate` hasta `sendDate + 7` (8 días calendario). Corregido a `addDaysISO(sendDate, 7)` en
+`buildQuery()` (`src/agents/hermes/services/metabaseService.js`) — ahora la ventana cubre
+`sendDate` hasta `sendDate + 6` (7 días en total). Validado con `node --check`; no se pudo
+re-verificar contra el servidor MCP en vivo con una venta real conocida en esta ventana específica
+desde este entorno — es un cambio aritmético de un solo valor sobre una función ya probada
+end-to-end, pero el usuario debe confirmar en Vercel que los números bajan de forma consistente.
+Detalle completo en el addendum de **ADR 0006**.
 
 ### Sesión 2026-09-02 (fix de routing SPA, gráfica de actividad real, auditoría en vivo y exploración de Iris/Metabase)
 

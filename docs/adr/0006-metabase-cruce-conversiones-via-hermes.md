@@ -164,3 +164,27 @@ a pasar en producción, las opciones son: aumentar el plan/timeout de la funció
 lotes con un límite de concurrencia, o aumentar `EMAIL_BATCH_SIZE` una vez que se confirme con más
 certeza dónde está el límite real del servidor MCP (entre 92.6KB y 106.1KB, sin acotar más para no
 gastar más llamadas de prueba de las necesarias).
+
+## Addendum — corrección de la ventana de atribución: 7 días en total, no sendDate+7 (mismo día)
+
+El usuario reportó que la ventana de atribución estaba trayendo datos de **8 días**: el código
+calculaba el límite superior exclusivo como `sendDate + 8 días` (`addDaysISO(sendDate, 8)`), lo
+que en la práctica cubre `sendDate` (día 0) hasta `sendDate + 7` (día 7) — 8 días calendario en
+total, uno de más.
+
+**Corrección:** la ventana debe ser de **7 días en total, contando el día del envío** (día 0 al
+día 6). El límite superior exclusivo pasó de `addDaysISO(sendDate, 8)` a `addDaysISO(sendDate, 7)`
+en `buildQuery()` (`src/agents/hermes/services/metabaseService.js`). El resto del query no cambió:
+sigue siendo `created_at >= sendDate AND created_at < <límite>` para no depender de la resolución
+de tiempo de `created_at` (timestamp sin zona horaria).
+
+Ejemplo concreto: para `sendDate = '2026-08-01'`, antes el rango cubría `2026-08-01` a
+`2026-08-08` (8 días); ahora cubre `2026-08-01` a `2026-08-07` (7 días: 01, 02, 03, 04, 05, 06,
+07).
+
+**Validado con:** `node --check` sobre el archivo modificado (sintaxis OK). No se pudo re-probar
+contra el servidor MCP en vivo con una venta real conocida en esta ventana específica desde este
+entorno de desarrollo — el cambio es una corrección aritmética de un solo valor (7 en vez de 8) en
+una función ya probada end-to-end en el ajuste anterior, así que el riesgo de regresión es bajo,
+pero el usuario debe confirmar en Vercel que los números de conversiones/ventas bajan de forma
+consistente con una ventana un día más corta.

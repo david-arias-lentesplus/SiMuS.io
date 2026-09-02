@@ -58,7 +58,7 @@
 //   1. Cruce por email: `email IN (...)` contra los correos que Hermes ya
 //      trajo de HubSpot (ver hubspotService.js).
 //   2. Ventana de atribución de 7 días: `created_at` entre `sendDate` y
-//      `sendDate + 7 días` (ambos límites inclusive).
+//      `sendDate` + 6 días (7 días en total, contando el día del envío).
 //   3. Filtro geográfico: `business_unit` = el código mapeado del país
 //      seleccionado en el frontend (ver src/agents/minerva/constants/countries.js).
 //   4. Exclusión de cancelaciones: cualquier `status` que contenga la
@@ -155,10 +155,14 @@ function addDaysISO(dateStr, days) {
 function buildQuery({ emails, businessUnit, sendDate }) {
   const emailList = emails.map(sqlStringLiteral).join(', ');
   const startDate = sqlStringLiteral(sendDate);
-  // Límite superior inclusive de "sendDate + 7 días": se usa "< sendDate + 8 días"
-  // en vez de "<= sendDate + 7 días 23:59:59" para no depender de la
-  // resolución de tiempo de `created_at` (timestamp sin zona horaria).
-  const endDateExclusive = sqlStringLiteral(addDaysISO(sendDate, 8));
+  // Ventana de 7 DÍAS EN TOTAL contando el día del envío (día 0 al día 6),
+  // no "sendDate + 7 días" (que darían 8 días). Se usa "< sendDate + 7 días"
+  // (exclusivo) en vez de "<= sendDate + 6 días 23:59:59" para no depender
+  // de la resolución de tiempo de `created_at` (timestamp sin zona horaria).
+  // Ajustado el 2026-09-02 por instrucción explícita del usuario: la
+  // versión anterior usaba `addDaysISO(sendDate, 8)`, que sumaba un día de
+  // más (8 días de ventana en vez de 7).
+  const endDateExclusive = sqlStringLiteral(addDaysISO(sendDate, 7));
   const businessUnitLiteral = sqlStringLiteral(businessUnit);
 
   return `
