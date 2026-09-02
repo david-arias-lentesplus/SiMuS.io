@@ -6,13 +6,29 @@ import {
   BarElement,
   PointElement,
   LineElement,
+  BarController,
+  LineController,
   Tooltip,
   Legend,
 } from 'chart.js';
 import { Chart } from 'react-chartjs-2';
 import { CHART_COLORS } from '../tokens/chartColors.js';
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Tooltip, Legend);
+// Chart.js v4 exige registrar los *controllers* (Bar/Line) por separado de
+// los elementos (BarElement/LineElement) y las escalas — sin esto falla en
+// runtime con "\"bar\" is not a registered controller" apenas se monta el
+// componente, aunque el import de arriba compile bien.
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  PointElement,
+  LineElement,
+  BarController,
+  LineController,
+  Tooltip,
+  Legend
+);
 
 // Hefesto — gráfica de "Actividad de campañas" del Dashboard. Componente
 // presentacional puro: recibe la serie YA agregada por Minerva
