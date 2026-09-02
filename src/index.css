@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-surface text-ink-900 font-sans;
+}
+
+/* Hefesto — al imprimir/exportar PDF el reporte de la Calculadora (ver
+   src/agents/hefesto/components/calculator/CalculatorReport.jsx), se
+   oculta la navegación y el formulario, y se liberan los contenedores con
+   scroll fijo (AppLayout usa h-screen/overflow-hidden en pantalla) para
+   que el contenido completo quepa en el PDF en vez de recortarse. */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  html, body, #root {
+    height: auto !important;
+    overflow: visible !important;
+  }
+}
