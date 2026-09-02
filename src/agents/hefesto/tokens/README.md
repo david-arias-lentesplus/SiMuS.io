@@ -13,11 +13,15 @@ usuario:
 - **Tarjetas**: blancas (`card` `#FFFFFF`), esquinas `rounded-card` (16px),
   sombra suave `shadow-card`.
 - **Tipografía**: `Inter` / sans-serif del sistema, limpia, sin serif.
-- **Colores de métricas** (gráfica de actividad SMS): `metric.sent`
-  (celeste), `metric.received` (turquesa), `metric.delivered` (verde),
-  `metric.failed` (rosa/magenta), `metric.optouts` (gris) — mapeados a los
-  checkboxes de leyenda "Sent / Received / Delivered / Failed / Opt-outs"
-  de la referencia.
+- **Colores de métricas** (`metric.sent`/`received`/`delivered`/`failed`/
+  `optouts`): pensados originalmente para una gráfica de leyenda "Sent /
+  Received / Delivered / Failed / Opt-outs" (checkboxes de la referencia
+  visual). **Sin uso todavía** (sesión 2026-09-02): `sms_campaigns` no
+  guarda eventos de entrega por mensaje, solo agregados por campaña, así
+  que la gráfica real implementada (`ActivityChart.jsx`) usa
+  `brand.indigo`/`brand.teal` en su lugar (ver `chartColors.js`). Estos
+  tokens quedan reservados para cuando Iris integre eventos de entrega
+  reales de Workingbits — no borrarlos.
 - **Estados**: `state.success` (verde, ROI positivo), `state.danger` (rojo,
   ROI negativo/fallos), `state.warning` (ámbar).
 

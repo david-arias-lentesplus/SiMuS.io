@@ -25,7 +25,9 @@ Desarrollar una plataforma para extraer, consolidar y analizar las métricas de 
 - [x] Sesión 2026-09-01 (Fase 1): andamiaje de código inicial creado (rutas, estado global, layout, servicios de datos) a partir del prototipo HTML `calculadoraroisms010926.html` y la referencia visual `image_dfbb87.png` que el usuario adjuntó.
 - [x] Sesión 2026-09-02 (pivote de Fase 1): formulario completo de la **Calculadora Híbrida** migrado a `CalculatorPage.jsx` (ver sección 7 para el detalle de archivos). La integración directa con la API de Workingbits sigue bloqueada; se reemplazó por ingreso manual + búsqueda de segmento simulada (HubSpot/Metabase).
 - [x] Sesión 2026-09-01: tabla de histórico completa migrada a `HistoryPage.jsx` (búsqueda, orden por columna, export CSV, eliminar fila/eliminar todo con confirmación).
-- [ ] Implementar la gráfica de actividad con Chart.js/react-chartjs-2 en `ChartCard` (Minerva debe primero exponer una serie temporal agregada, hoy `useFilteredCampaigns` solo da `stats` puntuales).
+- [x] Sesión 2026-09-02: gráfica de actividad implementada con datos reales de Supabase (`useCampaignActivitySeries.js` + `ActivityChart.jsx`, Chart.js). Pendiente de que el usuario despliegue para confirmarla visualmente en producción.
+- [x] Sesión 2026-09-02: corregido el 404 de Vercel al recargar rutas de cliente (`/calculadora`, `/historico`) — faltaba `vercel.json` con rewrite a `index.html` excluyendo `/api/*`. Pendiente de deploy.
+- [ ] **Hallazgo de la auditoría de esta sesión, no resuelto:** la app no tiene autenticación (`src/agents/eleuthia/` solo tiene el README) — cualquiera con la URL puede leer el histórico completo y aprobar/guardar campañas. Ver `docs/fase3-analisis.md` sección 2, prioridad más alta para la siguiente fase.
 - [x] Sesión 2026-09-01: `.env.local` completado y corregido (tenía sintaxis inválida: comillas y `;` como si fuera JS, en vez de `CLAVE=valor` plano). El Dashboard ya conecta al proyecto Supabase real (`qzothtkbqnorwmhgxktw`) y confirma 17 campañas históricas reales (jun-2026).
 - [x] Sesión 2026-09-01: se detectó y corrigió un bug de Minerva — el filtro de fecha por defecto (`dateRange: '30d'`) ocultaba TODO el histórico real (más antiguo que 30 días) tanto en el Dashboard como en Histórico. Default corregido a `'all'`.
 - [ ] **NO aplicar todavía** el bloque de RLS de `001_sms_campaigns.sql` contra el proyecto real: se verificó que hoy la tabla acepta lectura con la anon key sin autenticación (no hay login construido); restringir a rol `authenticated` rompería la app hasta que Eleuthia defina auth. Ver advertencia en el propio archivo SQL.
@@ -79,7 +81,12 @@ SiMuS.io/
 0. **Iris**: definir e implementar el cruce real de conversiones (compras en los 7 días
    posteriores al envío) contra Metabase/Workingbits, reemplazando
    `src/agents/minerva/utils/simulateConversions.js` — mismo shape de retorno (number), mismo
-   patrón que se usó para `fetchSegmentFromHubSpot.js` en la Fase 2.
+   patrón que se usó para `fetchSegmentFromHubSpot.js` en la Fase 2. **Bloqueado (sesión
+   2026-09-02):** se exploró `ss.silver_sales` y tablas relacionadas vía `livo_metabase` y no
+   tienen ninguna columna de cliente (email/teléfono/documento/customer_id) que se pueda cruzar
+   con `hubspot_contacts`. Se necesita que alguien del equipo de datos confirme qué columna o
+   tabla puente vincula un pedido con la identidad del cliente antes de escribir el query real.
+   Ver `docs/fase3-analisis.md` sección 4 para el detalle y la forma del query objetivo.
 0. **Usuario**: configurar `HS_PAT` (Private App Token de HubSpot) en `.env.local` para probar
    localmente con `vercel dev`, y en Vercel Project Settings -> Environment Variables para
    producción. Ver `.env.example` y ADR 0004.
@@ -91,7 +98,10 @@ SiMuS.io/
 3. **Deméter**: el esquema de `sms_campaigns` (campañas ya calculadas) está creado; falta diseñar las tablas de clientes (Hermes/HubSpot) y eventos crudos de envío (Iris/Workingbits) cuando esos agentes definan su mecanismo de integración — sí requiere ADR por ser decisión de modelado relevante.
 4. **Hermes**: definir el método de autenticación con HubSpot (OAuth app vs. Private App token).
 5. **Iris**: definir el mecanismo de extracción de Workingbits (webhook vs. polling) antes de que cualquier dato real corra riesgo de expirar a los 90 días.
-6. **Eleuthia**: definir la matriz de roles/permisos del equipo interno.
+6. **Eleuthia**: definir la matriz de roles/permisos del equipo interno. **Urgente (hallazgo de
+   la auditoría, sesión 2026-09-02):** hoy no existe ninguna autenticación — priorizar al menos
+   un login mínimo (p. ej. Supabase Auth + allowlist de correos) antes de compartir la URL fuera
+   del equipo. Ver `docs/fase3-analisis.md` sección 3.
 7. **Apolo**: mantener este HANDOFF y el README actualizados a medida que se resuelvan los puntos anteriores.
 
 ## 5. Registro de errores / incidencias
@@ -112,6 +122,56 @@ Ver `docs/adr/`. Resumen:
 - **ADR 0002**: Supabase como persistencia central para superar el límite de 90 días de retención de Workingbits.
 
 ## 7. Historial
+
+### Sesión 2026-09-02 (fix de routing SPA, gráfica de actividad real, auditoría en vivo y exploración de Iris/Metabase)
+
+El usuario pidió, en un solo mensaje con capturas del deploy en vivo, cuatro cosas mientras
+resolvía otros temas en paralelo: (1) reemplazar el placeholder de la gráfica "Actividad de
+Campañas" del Dashboard por datos reales de Supabase, (2) arreglar el 404 de Vercel al recargar
+rutas de cliente como `/calculadora`, (3) auditar `https://simus-one.vercel.app/` y proponer
+mejoras para la siguiente fase, y (4) intentar usar el conector `livo_metabase` para traer
+conversiones reales (7 días post-envío) cruzando una lista/segmento de HubSpot contra ventas del
+DWH — la pieza que hoy sigue simulada en `simulateConversions.js` (dominio de Iris).
+
+Entregado en esta sesión:
+
+- **Minerva + Hefesto (punto 1, chart real):** `src/agents/minerva/hooks/useCampaignActivitySeries.js`
+  (agrega las campañas ya filtradas por `useFilteredCampaigns` en series por día o por mes según el
+  rango de fechas — cambia automáticamente a agrupación mensual si el rango supera 21 días — con SMS
+  enviados y ROI real promedio por bucket), `src/agents/hefesto/tokens/chartColors.js` (paleta
+  dedicada, ya que los tokens `metric.*` existentes son de eventos de entrega que Iris aún no
+  provee — documentado en `src/agents/hefesto/tokens/README.md`), y
+  `src/agents/hefesto/components/ActivityChart.jsx` (Chart.js mixto: barras de SMS enviados + línea
+  de ROI real promedio, dos ejes Y). `DashboardPage.jsx` ahora renderiza esto con estados de carga,
+  error y "sin datos" en vez del placeholder fijo.
+- **Fix de routing (punto 2):** `vercel.json` nuevo en la raíz del repo, con un rewrite que manda
+  todo a `index.html` excepto `/api/*` — es la causa confirmada del 404 al recargar rutas de
+  cliente (Vercel, sin este archivo, solo sirve rutas que existen como archivos físicos).
+- **Auditoría del sitio en vivo + recomendaciones (punto 3):** ver `docs/fase3-analisis.md`
+  (nuevo). Resumen: se confirmó en el navegador el bug del punto 2 y el placeholder del punto 1
+  (ambos ya corregidos arriba, pendientes de deploy); se confirmó que la integración HubSpot de
+  Fase 2 funciona end-to-end en producción; y se detectó un hallazgo no pedido pero relevante — la
+  app no tiene ninguna autenticación (`src/agents/eleuthia/` solo tiene el README), así que
+  cualquiera con la URL puede leer el histórico completo y aprobar/guardar campañas nuevas. Se
+  agregó como recomendación de mayor prioridad para la siguiente fase.
+- **Exploración de Iris/Metabase (punto 4):** con el conector `livo_metabase` (solo lectura) se
+  ubicó la tabla de ventas correcta, `ss.silver_sales` (base `livo_command_center`, id=16), con
+  timestamps de todo el ciclo del pedido — apta para calcular la ventana de 7 días. Se revisaron
+  también `silver_sales_products`, `silver_pedidos_pdv`, `silver_pedidos_kpl` y `hubspot_contacts`
+  (base `MKT`, id=15) buscando un identificador de cliente común a ambos lados. **No se encontró**:
+  ninguna tabla de ventas/pedidos tiene email, teléfono, documento o `customer_id`, y no existe una
+  tabla puente cliente↔pedido en el warehouse (se descartaron `clients`, acotada a MercadoLibre, y
+  `kpl_clients_orders`, que es un log de sincronización ETL). Detalle completo, incluida la forma
+  del query objetivo una vez que se identifique la columna correcta, en la sección 4 de
+  `docs/fase3-analisis.md`. **Conclusión:** Iris no se puede implementar con el acceso actual sin
+  que alguien del equipo de datos confirme el campo de vínculo cliente↔pedido; `simulateConversions.js`
+  sigue siendo el mecanismo correcto mientras tanto.
+
+**Nota de entorno:** igual que en sesiones anteriores, ningún archivo se pudo validar con
+`npm run build`/`vercel dev` dentro de este puente (ver incidencia de Rollup/EACCES en la sección
+5); todo se validó con `node --check` (para los `.js` puros) y revisión manual línea por línea
+(para los `.jsx`). El usuario debe desplegar y confirmar visualmente los dos fixes.
+
 
 _Nada movido a historial todavía._
 

@@ -1,12 +1,16 @@
 import Topbar from '../layout/Topbar.jsx';
 import KpiCard from '../components/KpiCard.jsx';
 import ChartCard from '../components/ChartCard.jsx';
+import ActivityChart from '../components/ActivityChart.jsx';
 import { useFilteredCampaigns } from '../../minerva/hooks/useFilteredCampaigns.js';
+import { useCampaignActivitySeries } from '../../minerva/hooks/useCampaignActivitySeries.js';
 
-// Hefesto — Dashboard global. Consume únicamente el hook de "organización"
-// de Minerva (useFilteredCampaigns); nunca toca Deméter/Supabase directo.
+// Hefesto — Dashboard global. Consume únicamente hooks de "organización"
+// de Minerva (useFilteredCampaigns, useCampaignActivitySeries); nunca toca
+// Deméter/Supabase directo.
 export default function DashboardPage() {
   const { stats, loading, error } = useFilteredCampaigns();
+  const activity = useCampaignActivitySeries();
 
   return (
     <>
@@ -30,11 +34,19 @@ export default function DashboardPage() {
           <KpiCard label="Países" value={loading ? '—' : stats.countries} />
         </div>
         <ChartCard title="Actividad de campañas">
-          {/* TODO(Hefesto + Minerva): integrar react-chartjs-2 alimentado
-              por la serie histórica que Minerva agregue por fecha. */}
-          <div className="flex h-full items-center justify-center text-sm text-ink-400">
-            Gráfica pendiente de datos históricos agregados por Minerva.
-          </div>
+          {activity.loading ? (
+            <div className="flex h-full items-center justify-center text-sm text-ink-400">Cargando...</div>
+          ) : activity.error ? (
+            <div className="flex h-full items-center justify-center text-sm text-state-danger">
+              Error al cargar la actividad: {activity.error.message}
+            </div>
+          ) : activity.isEmpty ? (
+            <div className="flex h-full items-center justify-center text-sm text-ink-400">
+              Todavía no hay campañas con fecha de envío para graficar.
+            </div>
+          ) : (
+            <ActivityChart labels={activity.labels} smsSent={activity.smsSent} roiAvgPct={activity.roiAvgPct} />
+          )}
         </ChartCard>
       </div>
     </>
