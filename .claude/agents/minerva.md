@@ -30,7 +30,16 @@ Minerva es el "sistema nervioso" del dashboard: conecta los datos que persiste D
 - **HADES**: valida transiciones de estado y consistencia de rutas.
 - **Apolo**: documenta la arquitectura de rutas y de estado.
 
+## Fase 3 (sesión 2026-09-02, ADR 0007) — Guards de autenticación/rol
+`src/agents/minerva/routes/AuthGate.jsx` resuelve la sesión de Eleuthia una sola vez al montar la
+app (bloquea el render hasta saber si hay sesión, evita el parpadeo login->dashboard).
+`RequireAuth.jsx`/`RequireAdmin.jsx` envuelven cada ruta protegida en `AppRoutes.jsx`: sin sesión
+redirige a `/login`; sin rol `admin` en una ruta admin-only (`/calculadora`, `/settings/*`) redirige
+al Dashboard. Estos Guards consumen `useAuth()` de Eleuthia — nunca lógica de rol propia (regla de
+arquitectura de siempre: Minerva no reimplementa lo que ya resuelve el agente dueño del dominio).
+La restricción real de todas formas la impone Supabase RLS del lado del servidor (ver ADR 0007 y
+`.claude/agents/demeter.md`) — estos Guards son la primera capa, cosmética.
+
 ## Pendiente de definir
-- Librería de estado global (Zustand, Redux, Context API u otra).
-- Estructura definitiva de rutas del dashboard.
-- Qué filtros/segmentaciones son de primera clase (por cliente, por campaña, por rango de fechas, por estado de entrega).
+- Librería de estado global — resuelto (Zustand, ver ADR 0003); se sumó en Fase 3 el store de sesión de Eleuthia (`useAuthStore`), que Minerva consume pero no posee.
+- Qué filtros/segmentaciones son de primera clase (por cliente, por campaña, por rango de fechas, por estado de entrega) — sigue abierto más allá de los filtros ya implementados en el Dashboard/Histórico.

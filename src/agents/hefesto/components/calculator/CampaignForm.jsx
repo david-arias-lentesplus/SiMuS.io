@@ -1,12 +1,31 @@
 import SegmentLookupField from './SegmentLookupField.jsx';
+import { round2 } from '../../utils/format.js';
 
 // Hefesto — formulario de "Nueva Campaña" de la Calculadora Híbrida
 // (pivote de Fase 1, sesión 2026-09-02: ingreso manual + simulación de
 // búsqueda de segmentos, ya que la integración directa con Workingbits
 // está bloqueada). Componente presentacional puro: recibe todo su estado
 // y handlers desde useCampaignCalculator (Minerva) vía la prop `calc`.
+//
+// Fase 3 (2026-09-02, ADR 0007): `countries` ahora puede venir vacío
+// mientras useCountriesConfig (Deméter) carga desde Supabase — el
+// <select> lo maneja mostrando "Cargando países..."; y los campos de
+// dinero (step="0.01") redondean a 2 decimales en onBlur (ver
+// "Corrección de Decimales" en format.js/round2).
 export default function CampaignForm({ calc }) {
-  const { form, setField, setEventType, country, countries, eventTypes, smsSearch, ctrlSearch, searchSegment, calculate } = calc;
+  const {
+    form,
+    setField,
+    setEventType,
+    country,
+    countries,
+    countriesLoading,
+    eventTypes,
+    smsSearch,
+    ctrlSearch,
+    searchSegment,
+    calculate,
+  } = calc;
 
   const messageLength = form.message.length;
   const smsSegments = Math.max(1, Math.ceil(messageLength / 160) || 1);
@@ -41,13 +60,20 @@ export default function CampaignForm({ calc }) {
           <select
             value={form.countryValue}
             onChange={(e) => setField('countryValue', e.target.value)}
-            className="w-full rounded-lg border border-ink-300/60 bg-surface px-3 py-2 text-sm text-ink-900 focus:border-brand-teal focus:outline-none"
+            disabled={countriesLoading || countries.length === 0}
+            className="w-full rounded-lg border border-ink-300/60 bg-surface px-3 py-2 text-sm text-ink-900 focus:border-brand-teal focus:outline-none disabled:opacity-50"
           >
-            {countries.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label} - ${c.costPerSms.toFixed(3)} / SMS
-              </option>
-            ))}
+            {countriesLoading ? (
+              <option value="">Cargando países...</option>
+            ) : countries.length === 0 ? (
+              <option value="">Sin países configurados</option>
+            ) : (
+              countries.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label} - ${c.costPerSms.toFixed(3)} / SMS
+                </option>
+              ))
+            )}
           </select>
         </Field>
 
@@ -155,6 +181,15 @@ function GroupSection({
 }
 
 function NumberField({ label, value, onChange, step = '1' }) {
+  // Campos de dinero (step="0.01"): al perder foco, se redondean a 2
+  // decimales — cubre el caso de un valor pegado/editado a mano con más
+  // decimales de la cuenta (ver "Corrección de Decimales", format.js).
+  const isMoney = step === '0.01';
+  function handleBlur(e) {
+    if (!isMoney) return;
+    const rounded = round2(e.target.value);
+    if (String(rounded) !== e.target.value) onChange(String(rounded));
+  }
   return (
     <Field label={label}>
       <input
@@ -163,6 +198,7 @@ function NumberField({ label, value, onChange, step = '1' }) {
         step={step}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={handleBlur}
         className="w-full rounded-lg border border-ink-300/60 bg-surface px-3 py-2 text-sm text-ink-900 focus:border-brand-teal focus:outline-none"
       />
     </Field>

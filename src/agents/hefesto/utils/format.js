@@ -28,3 +28,20 @@ export function fmtDateShort(iso) {
   const [y, m, d] = datePart.split('-');
   return `${d}/${m}/${y}`;
 }
+
+/**
+ * Redondea a 2 decimales. Fase 3 (2026-09-02, "Corrección de Decimales",
+ * QA reportó inputs numéricos mostrando basura de punto flotante como
+ * "13084,510000000002"). fmt$/fmtN ya redondeaban correctamente para
+ * VISTAS de solo lectura (toLocaleString con maximumFractionDigits), pero
+ * los <input type="number"> editables de CampaignForm.jsx muestran el
+ * valor crudo del estado sin pasar por esos formatters — este helper se
+ * usa para limpiar el valor en el origen (useCampaignCalculator.js, al
+ * recibir totalSales de Metabase) y como red de seguridad en el propio
+ * input (onBlur, ver NumberField en CampaignForm.jsx).
+ */
+export function round2(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}

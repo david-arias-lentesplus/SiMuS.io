@@ -31,7 +31,26 @@ Hefesto construye todas las vistas del dashboard de métricas de SMS y es el gua
 - **HADES**: sus componentes deben ser testeables (props claras, sin efectos secundarios ocultos).
 - **Apolo**: documenta cada componente nuevo del Design System.
 
+## Fase 3 (sesión 2026-09-02, ADR 0007) — Login, Configuración, UserMenu, decimales, paginación
+- **Login**: `pages/LoginPage.jsx` — tarjeta blanca centrada, mismo lenguaje visual que el resto
+  (gradiente de marca, `bg-blue-deep` para el botón principal). Delega la lógica a
+  `useAuth().signIn` (Eleuthia).
+- **Configuración**: `pages/settings/SettingsLayout.jsx` (tabs Países/Usuarios) +
+  `CountriesSettingsPage.jsx`/`UsersSettingsPage.jsx` — CRUD simple, solo admin.
+- **`bg-blue-deep`**: token nuevo en `tailwind.config.js` (azul/morado corporativo dentro del rango
+  del gradiente de Sidebar), pedido explícitamente para Login y Configuración.
+- **UserMenu**: `components/UserMenu.jsx` reemplaza el círculo gris vacío del `Topbar` — iniciales
+  del correo, rol, menú con "Configuración" (solo admin) y "Cerrar sesión".
+- **Corrección de decimales**: `utils/format.js` exporta `round2()`; se aplica en el origen del
+  dato (Minerva, al recibir `totalSales` de Metabase) y como red de seguridad en `onBlur` de los
+  campos de dinero de `CampaignForm.jsx`. Corrige el bug de QA (`13084,510000000002`).
+- **Paginación del Histórico**: `pages/HistoryPage.jsx`, client-side, `PAGE_SIZE = 20` sobre el
+  arreglo ya filtrado — ver limitación anotada en ADR 0007 (mejora futura: paginar la query misma
+  si el histórico crece mucho).
+- **Nav condicionada por rol**: `Sidebar.jsx` oculta "Calculadora" y el ícono de "Configuración"
+  para un viewer; el botón de salir (antes decorativo) ahora dispara `useAuth().signOut()`.
+
 ## Pendiente de definir
-- Framework de UI exacto (se asume Next.js + Tailwind CSS por ser el estándar de despliegue en Vercel; sujeto a confirmación).
-- Librería de gráficas para las métricas (Recharts, Chart.js, u otra).
-- Paleta de tokens de diseño inicial (colores de marca, tipografía).
+- Framework de UI exacto — resuelto (Vite + React + Tailwind, ver ADR 0003).
+- Librería de gráficas — resuelta (Chart.js, ver `ActivityChart.jsx`).
+- Recuperación de contraseña en LoginPage (Eleuthia no la implementó en Fase 3, ver su pendiente).

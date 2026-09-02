@@ -2,7 +2,7 @@
 
 > Bitácora técnica viva del proyecto. Mantenida por Apolo. Se actualiza al final de cada sesión de trabajo relevante, nunca retroactivamente. Lo obsoleto se mueve a la sección de Historial, no se borra.
 
-Última actualización: 2026-09-02 (variables de entorno del cliente sin prefijo VITE_, ADR 0005).
+Última actualización: 2026-09-02 (Fase 3 — autenticación, roles admin/viewer y `countries_config`, ADR 0007).
 
 ---
 
@@ -27,7 +27,8 @@ Desarrollar una plataforma para extraer, consolidar y analizar las métricas de 
 - [x] Sesión 2026-09-01: tabla de histórico completa migrada a `HistoryPage.jsx` (búsqueda, orden por columna, export CSV, eliminar fila/eliminar todo con confirmación).
 - [x] Sesión 2026-09-02: gráfica de actividad implementada con datos reales de Supabase (`useCampaignActivitySeries.js` + `ActivityChart.jsx`, Chart.js). Pendiente de que el usuario despliegue para confirmarla visualmente en producción.
 - [x] Sesión 2026-09-02: corregido el 404 de Vercel al recargar rutas de cliente (`/calculadora`, `/historico`) — faltaba `vercel.json` con rewrite a `index.html` excluyendo `/api/*`. Pendiente de deploy.
-- [ ] **Hallazgo de la auditoría de esta sesión, no resuelto:** la app no tiene autenticación (`src/agents/eleuthia/` solo tiene el README) — cualquiera con la URL puede leer el histórico completo y aprobar/guardar campañas. Ver `docs/fase3-analisis.md` sección 2, prioridad más alta para la siguiente fase.
+- [x] ~~**Hallazgo de la auditoría de esta sesión, no resuelto:** la app no tiene autenticación (`src/agents/eleuthia/` solo tiene el README) — cualquiera con la URL puede leer el histórico completo y aprobar/guardar campañas.~~ **Resuelto en sesión 2026-09-02 (Fase 3)**: login con Supabase Auth + roles `admin`/`viewer` reales, exigidos por RLS en Postgres, no solo en el cliente. Ver ADR 0007 y sección 7.
+- [x] Sesión 2026-09-02 (Fase 3): activado el agente Eleuthia — login, roles `admin`/`viewer`, Guards de ruta (Minerva), catálogo de países editable `countries_config` (Deméter, reemplaza el arreglo estático), vista de Gestión de Usuarios + invitación por correo (`api/admin/invite-user.js`), y pulido de UI (UserMenu, corrección de decimales, paginación del Histórico). Código extraído y validado con `node --check` en el dispositivo del usuario; **pendiente que el usuario aplique la migración SQL, promueva al primer admin y cargue `SUPABASE_SERVICE_ROLE_KEY` en Vercel** (ver ADR 0007 sección Consecuencias y sección 4 de este archivo).
 - [x] Sesión 2026-09-02 (ajuste de integración Metabase): cruce real de conversiones y ventas implementado — ver ADR 0006. `simulateConversions.js` eliminado; `useCampaignCalculator.searchSegment()` ahora completa tamaño de muestra, conversiones Y ventas totales, las tres reales. Corregido el mismo día: la conexión real es a un servidor MCP (`metabase-mcp`), no a la API REST de Metabase — reescrito y probado end-to-end con datos reales (ver ADR 0006). `METABASE_MCP_URL`/`METABASE_MCP_KEY`/`METABASE_DATABASE_ID` ya están en `.env.local`; pendiente que el usuario los copie a Vercel y valide en producción.
 - [x] Sesión 2026-09-02 (fix 413 Payload Too Large): `fetchConversionsFromWarehouse` ahora parte la lista de emails en lotes de `EMAIL_BATCH_SIZE = 800` (medido empíricamente contra el servidor MCP real — el límite real cae entre 92.6KB y 106.1KB de body) y suma resultados entre lotes. Ver ADR 0006 (addendum) y HANDOFF sección 7 para el detalle de las mediciones. Pendiente que el usuario confirme en Vercel que el botón "Buscar" ya no falla con 413 para grupos grandes.
 - [x] Sesión 2026-09-01: `.env.local` completado y corregido (tenía sintaxis inválida: comillas y `;` como si fuera JS, en vez de `CLAVE=valor` plano). El Dashboard ya conecta al proyecto Supabase real (`qzothtkbqnorwmhgxktw`) y confirma 17 campañas históricas reales (jun-2026).
@@ -119,10 +120,19 @@ SiMuS.io/
 3. **Deméter**: el esquema de `sms_campaigns` (campañas ya calculadas) está creado; falta diseñar las tablas de clientes (Hermes/HubSpot) y eventos crudos de envío (Iris/Workingbits) cuando esos agentes definan su mecanismo de integración — sí requiere ADR por ser decisión de modelado relevante.
 4. **Hermes**: definir el método de autenticación con HubSpot (OAuth app vs. Private App token).
 5. **Iris**: definir el mecanismo de extracción de Workingbits (webhook vs. polling) antes de que cualquier dato real corra riesgo de expirar a los 90 días.
-6. **Eleuthia**: definir la matriz de roles/permisos del equipo interno. **Urgente (hallazgo de
-   la auditoría, sesión 2026-09-02):** hoy no existe ninguna autenticación — priorizar al menos
-   un login mínimo (p. ej. Supabase Auth + allowlist de correos) antes de compartir la URL fuera
-   del equipo. Ver `docs/fase3-analisis.md` sección 3.
+6. ~~**Eleuthia**: definir la matriz de roles/permisos del equipo interno.~~ — **Resuelto en
+   sesión 2026-09-02 (Fase 3)**: Supabase Auth + roles `admin`/`viewer` reales (RLS en Postgres,
+   ver ADR 0007). **Sigue pendiente, a cargo del usuario:**
+   - Aplicar la migración `002_auth_roles_countries_config.sql` y desplegar el frontend con login
+     en la misma ventana (ver advertencia de orden en ADR 0007).
+   - Promover al primer admin a mano en el SQL Editor de Supabase (comando exacto en ADR 0007 y en
+     el propio archivo de migración).
+   - Cargar `SUPABASE_SERVICE_ROLE_KEY` en Vercel (Project Settings -> Environment Variables) para
+     que funcione la invitación de usuarios.
+   - Probar el flujo real de login/roles/invitación en un despliegue real — no se pudo probar
+     end-to-end desde este entorno de desarrollo.
+   - Pendiente natural, no pedido en Fase 3: recuperación de contraseña / verificación de email
+     obligatoria.
 7. **Apolo**: mantener este HANDOFF y el README actualizados a medida que se resuelvan los puntos anteriores.
 
 ## 5. Registro de errores / incidencias
@@ -145,6 +155,66 @@ Ver `docs/adr/`. Resumen:
 - **ADR 0002**: Supabase como persistencia central para superar el límite de 90 días de retención de Workingbits.
 
 ## 7. Historial
+
+### Sesión 2026-09-02 (Fase 3 — Autenticación, roles admin/viewer, `countries_config` y pulido de UI, ADR 0007)
+
+Instrucción de sistema de agentes recibida: activar a **Eleuthia** (auth/usuarios) y llevar a SiMuS.io
+de "un solo usuario implícito" a multiusuario con roles reales, reemplazar el catálogo estático de
+países por una tabla editable, y resolver tres detalles de UI detectados en QA (decimales sueltos,
+círculo gris vacío del header, histórico sin límite de filas). Detalle completo de decisiones en
+`docs/adr/0007-fase3-auth-roles-countries-config.md`.
+
+- **Eleuthia (auth y roles)**: Supabase Auth (email + contraseña). `public.profiles` (trigger
+  `security definer` que crea la fila con `role='viewer'` por defecto al alta de cada usuario) como
+  fuente de verdad del rol. `public.is_admin()` (`security definer`) resuelve la dependencia
+  circular de RLS. `useAuthStore.js` (Zustand, único punto que llama `supabase.auth.*`) +
+  `useAuth.js` (hook de conveniencia: `isAdmin`, `isViewer`). Vista "Gestión de Usuarios"
+  (`/settings/users`, solo admin) invita por correo vía `api/admin/invite-user.js` (Serverless
+  Function nueva, usa `SUPABASE_SERVICE_ROLE_KEY` del lado del servidor, nunca en el cliente —
+  verifica el rol del que invita contra `profiles` antes de invitar, nunca confía en el rol que
+  venga del body del request).
+- **Deméter (persistencia)**: migración `002_auth_roles_countries_config.sql` — tablas `profiles` y
+  `countries_config` (`country_name`, `sms_price`, `currency`, `metabase_code`, `is_active`) con RLS
+  real, más RLS por fin real (no placeholder) en `sms_campaigns`, gateada por `is_admin()`. Hooks
+  `useCountriesConfig.js`/`useProfiles.js` y servicios `countriesConfigService.js`/
+  `profilesService.js` nuevos.
+- **Minerva (rutas y estado)**: `AuthGate.jsx` resuelve la sesión una sola vez al montar la app;
+  `RequireAuth.jsx`/`RequireAdmin.jsx` protegen `/calculadora`, `/settings/countries` y
+  `/settings/users` (sin sesión -> `/login`; sin rol admin en ruta admin-only -> `/`).
+  `useCampaignCalculator.js` ahora consume `countries_config` vía el hook de Deméter en vez del
+  arreglo estático (que se conserva como seed de la migración y fallback defensivo, ver ADR 0007).
+- **Hefesto (UI/UX)**: `LoginPage.jsx` y el layout de `/settings` (`SettingsLayout.jsx` +
+  `CountriesSettingsPage.jsx`/`UsersSettingsPage.jsx`) con la estética de siempre (tarjetas blancas,
+  gradiente de marca) y el nuevo token `bg-blue-deep` en `tailwind.config.js`. `UserMenu.jsx`
+  reemplaza el círculo gris vacío del `Topbar` (iniciales, rol, "Configuración" solo admin, "Cerrar
+  sesión"). Corrección de decimales: `round2()` nuevo en `format.js`, aplicado en el origen
+  (`useCampaignCalculator.searchSegment()`, sobre `totalSales` de Metabase) y como red de seguridad
+  en el `onBlur` de los campos de dinero de `CampaignForm.jsx` (bug de QA `13084,510000000002`
+  resuelto). `HistoryPage.jsx` con paginación client-side (`PAGE_SIZE = 20`); botones de eliminar
+  (individual y "eliminar todo") ahora solo se renderizan si `isAdmin`. `Sidebar.jsx` oculta
+  "Calculadora" y "Configuración" para viewers; botón de salir (antes decorativo) ahora funciona.
+
+**Validación realizada**: todos los `.js` nuevos pasaron `node --check` en el dispositivo del
+usuario tras la extracción (hooks, servicios, la API Route, el store de Zustand, `tailwind.config.js`).
+Los `.jsx` se revisaron manualmente línea por línea (mismo criterio usado desde Fase 1, ya que
+`node --check` no parsea JSX) y se verificó de forma cruzada que las rutas de import entre archivos
+nuevos son consistentes (todos los componentes que necesitan sesión importan `useAuth` desde
+`src/agents/eleuthia/hooks/useAuth.js`; los servicios de Deméter importan el cliente de Supabase
+desde `src/agents/demeter/supabaseClient.js`). No se pudo correr `npm run build`/`vercel dev` ni
+probar el flujo end-to-end (signup, login, invitación real, RLS contra producción) desde este
+entorno de desarrollo — misma limitación de siempre.
+
+**Pendiente a cargo del usuario, orden importa (ver ADR 0007 sección Consecuencias):**
+1. Aplicar la migración `002_auth_roles_countries_config.sql` y desplegar el frontend con login **en
+   la misma ventana** — entre aplicar la migración y tener el frontend con sesión real, la anon key
+   sin autenticar no puede leer ni escribir nada en `sms_campaigns`/`countries_config`.
+2. Promover al primer admin a mano, una sola vez, en el SQL Editor de Supabase:
+   `update public.profiles set role = 'admin' where email = 'tu-correo@dominio.com';`
+3. Cargar `SUPABASE_SERVICE_ROLE_KEY` (Project Settings -> API en el Dashboard de Supabase) en las
+   variables de entorno de Vercel — sin ella, `api/admin/invite-user.js` responde 500. Se dejó un
+   placeholder vacío y documentado en `.env.local` para desarrollo local.
+4. Probar el flujo real de login/roles/invitación en un despliegue real.
+
 
 ### Sesión 2026-09-02 (ajuste de integración Metabase — cruce real de conversiones, agentes Hermes y Deméter)
 

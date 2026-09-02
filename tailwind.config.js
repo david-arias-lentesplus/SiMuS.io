@@ -3,6 +3,12 @@
  * Ningún componente debe usar valores de color/espaciado "mágicos" fuera
  * de este archivo (ver .claude/agents/hefesto.md, sección "Reglas de
  * arquitectura"). Extraídos de la referencia visual image_dfbb87.png.
+ *
+ * `blue-deep` (Fase 3, 2026-09-02, ADR 0007): azul/morado corporativo
+ * pedido explícitamente para Login y Configuración (`bg-blue-deep`) —
+ * elegido dentro del mismo rango que el gradiente de Sidebar
+ * (sidebar.from #241454 -> sidebar.to #3E1F73) para que la nueva UI de
+ * auth/settings se sienta parte del mismo sistema visual.
  */
 export default {
   content: ['./index.html', './src/**/*.{js,jsx}'],
@@ -13,6 +19,7 @@ export default {
           from: '#241454',
           to: '#3E1F73',
         },
+        'blue-deep': '#2E1A73',
         surface: '#F4F5FA',
         card: '#FFFFFF',
         ink: {

@@ -33,7 +33,19 @@ Deméter es la única fuente de verdad de los datos estructurados del sistema. E
 - **HADES**: valida integridad referencial y cobertura de tests sobre los servicios de datos.
 - **Apolo**: documenta cada cambio de esquema y decisión de modelado.
 
+## Fase 3 (sesión 2026-09-02, ADR 0007) — RLS real activada, catálogo de países
+La migración `002_auth_roles_countries_config.sql` cierra el placeholder que dejó
+`001_sms_campaigns.sql`: `sms_campaigns` ahora tiene policies reales por rol (`admin` puede
+insertar/actualizar/eliminar, `viewer` solo puede leer), apoyadas en `public.is_admin()` y en la
+tabla `public.profiles` que administra Eleuthia. También se agregó `public.countries_config`
+(`src/agents/demeter/services/countriesConfigService.js` +
+`src/agents/demeter/hooks/useCountriesConfig.js`), que reemplaza el arreglo estático
+`src/agents/minerva/constants/countries.js` como fuente de verdad de tarifas por país — ver ese
+archivo para el fallback que se mantiene por robustez. **Advertencia repetida del propio SQL**: la
+migración debe aplicarse coordinada con el deploy del login (Eleuthia) — antes de que exista sesión
+real, activar estas policies deja a la anon key sin poder leer/escribir nada en esas tablas.
+
 ## Pendiente de definir
-- Modelo exacto de tablas (clientes, campañas, mensajes, eventos, métricas agregadas) y sus relaciones.
-- Política de RLS por rol (admin, analista, etc.).
+- Modelo exacto de tablas de mensajes/eventos crudos (clientes, campañas, mensajes, eventos, métricas agregadas) y sus relaciones — sigue bloqueado por el mecanismo de extracción de Iris/Workingbits.
 - Estrategia de archivado/particionamiento a largo plazo para el histórico de mensajes.
+- Paginación real (server-side, `range()`) de `fetchCampaigns()` si el histórico crece mucho — hoy `HistoryPage.jsx` pagina en el cliente sobre el arreglo completo (ver ADR 0007, punto 6).

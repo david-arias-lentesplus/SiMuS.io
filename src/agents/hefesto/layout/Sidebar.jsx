@@ -1,17 +1,33 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../eleuthia/hooks/useAuth.js';
 
 // Hefesto — Sidebar oscura, tomada de la referencia visual image_dfbb87.png
 // (gradiente morado/marino de arriba a abajo, ícono de marca arriba,
 // íconos de navegación centrados, botón de salir abajo).
-// Componente presentacional puro: no importa hooks de datos, solo recibe
-// rutas de Minerva vía <NavLink>.
+//
+// Fase 3 (2026-09-02, ADR 0007): la Calculadora es admin-only (`adminOnly`
+// filtra el item para un viewer, aunque el router de Minerva igual
+// bloquearía la ruta) y se agregó el ícono de Configuración (solo admin).
+// El botón de salir, que antes no hacía nada, ahora dispara
+// useAuth().signOut() de Eleuthia.
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: ChartIcon },
-  { to: '/calculadora', label: 'Calculadora', icon: MailIcon },
+  { to: '/calculadora', label: 'Calculadora', icon: MailIcon, adminOnly: true },
   { to: '/historico', label: 'Histórico', icon: ClockIcon },
 ];
 
 export default function Sidebar() {
+  const { isAdmin, signOut } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const items = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
+  const settingsActive = location.pathname.startsWith('/settings');
+
+  async function handleLogout() {
+    await signOut();
+    navigate('/login', { replace: true });
+  }
+
   return (
     <aside className="no-print flex h-full w-20 flex-col items-center justify-between bg-gradient-to-b from-sidebar-from to-sidebar-to py-6">
       <div className="flex flex-col items-center gap-8">
@@ -19,7 +35,7 @@ export default function Sidebar() {
           <BoltIcon />
         </div>
         <nav className="flex flex-col items-center gap-4">
-          {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+          {items.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}
@@ -36,11 +52,23 @@ export default function Sidebar() {
               <Icon />
             </NavLink>
           ))}
+          {isAdmin ? (
+            <NavLink
+              to="/settings/countries"
+              title="Configuración"
+              className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors ${
+                settingsActive ? 'bg-brand-teal text-white' : 'text-white/60 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              <SettingsIcon />
+            </NavLink>
+          ) : null}
         </nav>
       </div>
       <button
         type="button"
         title="Salir"
+        onClick={handleLogout}
         className="flex h-10 w-10 items-center justify-center rounded-xl text-white/50 hover:bg-white/10 hover:text-white"
       >
         <PowerIcon />
@@ -57,3 +85,4 @@ function ChartIcon() { return (<svg {...iconProps()}><path d="M3 3v18h18" /><pat
 function MailIcon() { return (<svg {...iconProps()}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 7l9 6 9-6" /></svg>); }
 function ClockIcon() { return (<svg {...iconProps()}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></svg>); }
 function PowerIcon() { return (<svg {...iconProps()}><path d="M12 2v10" /><path d="M18.4 6.6a9 9 0 1 1-12.8 0" /></svg>); }
+function SettingsIcon() { return (<svg {...iconProps()}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>); }

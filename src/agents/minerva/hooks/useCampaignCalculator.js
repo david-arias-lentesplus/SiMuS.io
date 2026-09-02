@@ -1,19 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useFilteredCampaigns } from './useFilteredCampaigns.js';
-import { COUNTRIES } from '../constants/countries.js';
+import { useCountriesConfig } from '../../demeter/hooks/useCountriesConfig.js';
+import { COUNTRIES as STATIC_COUNTRIES_FALLBACK } from '../constants/countries.js';
 import { EVENT_TYPES, detectEventType } from '../utils/detectEventType.js';
 import { fetchSegmentFromHubSpot } from '../utils/fetchSegmentFromHubSpot.js';
 import { fetchConversionsFromMetabase } from '../utils/fetchConversionsFromMetabase.js';
 import { computeMetrics } from '../utils/computeMetrics.js';
+import { round2 } from '../../hefesto/utils/format.js';
 
 // Minerva — hook de "organización" de la Calculadora Híbrida (pivote de
-// Fase 1, sesión 2026-09-02; integración real con HubSpot en Fase 2,
-// sesión 2026-09-02; cruce real de conversiones contra Metabase en la
-// sesión 2026-09-02 de "ajuste de integración Metabase"). Es la única
-// puerta de entrada que CalculatorPage.jsx (Hefesto) debe usar: mantiene
-// el estado del formulario, orquesta la búsqueda de segmentos (tamaño de
-// muestra REAL vía Hermes/HubSpot + conversiones y ventas REALES vía
-// Hermes/Metabase) y separa con claridad las dos acciones del flujo:
+// Fase 1, sesión 2026-09-02; integración real con HubSpot en Fase 2;
+// cruce real de conversiones contra Metabase en el ajuste de esa misma
+// sesión; catálogo de países vía Supabase en Fase 3, ADR 0007). Es la
+// única puerta de entrada que CalculatorPage.jsx (Hefesto) debe usar:
+// mantiene el estado del formulario, orquesta la búsqueda de segmentos
+// (tamaño de muestra REAL vía Hermes/HubSpot + conversiones y ventas
+// REALES vía Hermes/Metabase) y separa con claridad las dos acciones del
+// flujo:
 //
 //   1. calculate()      -> SOLO calcula en memoria (computeMetrics), NUNCA
 //                           toca Supabase.
@@ -28,7 +31,7 @@ import { computeMetrics } from '../utils/computeMetrics.js';
 const EMPTY_FORM = {
   name: '',
   sendDate: '',
-  countryValue: COUNTRIES[0].value,
+  countryValue: '', // se completa solo con el primer país que cargue useCountriesConfig
   eventType: EVENT_TYPES[0],
   message: '',
   smsSegmentName: '',
@@ -46,6 +49,26 @@ const IDLE_APPROVAL = { status: 'idle', error: null };
 
 export function useCampaignCalculator() {
   const { save } = useFilteredCampaigns();
+  // Fase 3 (ADR 0007): fuente de verdad ahora es la tabla countries_config
+  // (solo países activos). Si viene vacía (tabla recién migrada sin
+  // deploy coordinado, error de red, RLS todavía no aplicado en un
+  // entorno viejo) se cae al catálogo estático como red de seguridad,
+  // para no dejar la Calculadora inutilizable.
+  const { countries: countriesConfig, loading: countriesLoading, error: countriesError } =
+    useCountriesConfig({ onlyActive: true });
+
+  const countries = useMemo(() => {
+    if (countriesConfig.length > 0) {
+      return countriesConfig.map((c) => ({
+        value: c.id,
+        label: c.country_name,
+        costPerSms: Number(c.sms_price),
+        businessUnit: c.metabase_code,
+      }));
+    }
+    if (!countriesLoading) return STATIC_COUNTRIES_FALLBACK;
+    return [];
+  }, [countriesConfig, countriesLoading]);
 
   const [form, setForm] = useState(EMPTY_FORM);
   const [eventTypeTouched, setEventTypeTouched] = useState(false);
@@ -61,9 +84,18 @@ export function useCampaignCalculator() {
     setForm((f) => ({ ...f, eventType: detectEventType(f.name) }));
   }, [form.name, eventTypeTouched]);
 
+  // Una vez que el catálogo de países carga (o cae al fallback), se
+  // completa el <select> con el primero si el usuario todavía no eligió
+  // ninguno (mismo patrón que el auto-completado de eventType arriba).
+  useEffect(() => {
+    if (!form.countryValue && countries.length > 0) {
+      setForm((f) => ({ ...f, countryValue: countries[0].value }));
+    }
+  }, [countries, form.countryValue]);
+
   const country = useMemo(
-    () => COUNTRIES.find((c) => c.value === form.countryValue) ?? COUNTRIES[0],
-    [form.countryValue]
+    () => countries.find((c) => c.value === form.countryValue) ?? countries[0] ?? { label: '', costPerSms: 0, businessUnit: '' },
+    [countries, form.countryValue]
   );
 
   // Cualquier edición del formulario invalida el último reporte calculado
@@ -84,14 +116,18 @@ export function useCampaignCalculator() {
    * Busca el segmento y lo cruza contra ventas reales:
    *   1. Tamaño de muestra + contactos (con email) REALES vía Hermes/HubSpot.
    *   2. Conversiones + ventas REALES vía Hermes/Metabase, cruzando esos
-   *      emails contra `silver.sales` en la ventana de 7 días desde
+   *      emails contra `silver.sales` en la ventana de atribución desde
    *      `form.sendDate`, filtrado por `country.businessUnit` y excluyendo
-   *      cancelaciones (ver src/agents/hermes/services/metabaseService.js,
-   *      sesión 2026-09-02 "ajuste de integración Metabase").
+   *      cancelaciones (ver src/agents/hermes/services/metabaseService.js).
    * Requiere que el usuario ya haya elegido la fecha de envío y el país
-   * (el segundo siempre tiene un valor por defecto) — sin fecha de envío
-   * no hay ventana de atribución que calcular, así que se valida antes de
-   * llamar a HubSpot para no gastar esa consulta en vano.
+   * (el segundo siempre tiene un valor por defecto una vez que
+   * useCountriesConfig termina de cargar) — sin fecha de envío no hay
+   * ventana de atribución que calcular, así que se valida antes de llamar
+   * a HubSpot para no gastar esa consulta en vano.
+   * `totalSales` se redondea a 2 decimales (round2) antes de guardarse en
+   * el formulario — corrige el bug de QA de Fase 3 donde la suma de
+   * lotes de Metabase podía traer basura de punto flotante
+   * (13084,510000000002) directo al input editable (ver format.js).
    * Listas grandes pueden tardar unos segundos en HubSpot (paginación +
    * batch/read en lotes de 100) — setSearch({loading:true}) queda activo
    * mientras tanto para que Hefesto muestre el estado de carga.
@@ -120,11 +156,12 @@ export function useCampaignCalculator() {
         businessUnit: country.businessUnit,
         sendDate: form.sendDate,
       });
+      const cleanTotalSales = round2(totalSales);
       setForm((f) => ({
         ...f,
         ...(isSms
-          ? { smsN: String(sampleSize), smsC: String(conversions), smsS: String(totalSales) }
-          : { ctrlN: String(sampleSize), ctrlC: String(conversions), ctrlS: String(totalSales) }),
+          ? { smsN: String(sampleSize), smsC: String(conversions), smsS: String(cleanTotalSales) }
+          : { ctrlN: String(sampleSize), ctrlC: String(conversions), ctrlS: String(cleanTotalSales) }),
       }));
       setReport(null);
       setApproval(IDLE_APPROVAL);
@@ -181,7 +218,9 @@ export function useCampaignCalculator() {
     setField,
     setEventType,
     country,
-    countries: COUNTRIES,
+    countries,
+    countriesLoading,
+    countriesError,
     eventTypes: EVENT_TYPES,
     smsSearch,
     ctrlSearch,

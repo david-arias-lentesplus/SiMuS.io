@@ -1,13 +1,14 @@
-// Hefesto — barra superior mínima de Fase 1 (título de la sección actual +
-// espacio reservado para acciones globales). Se mantiene deliberadamente
-// simple hasta que Eleuthia defina el modelo de usuario/sesión a mostrar
-// aquí (avatar, nombre, rol).
+import UserMenu from '../components/UserMenu.jsx';
+
+// Hefesto — barra superior (título de la sección actual + UserMenu).
+// Fase 3 (2026-09-02, ADR 0007): el placeholder gris de sesión se
+// reemplazó por <UserMenu/> ahora que Eleuthia expone el hook de sesión
+// activa (iniciales, rol, "Configuración" si es admin, "Cerrar sesión").
 export default function Topbar({ title }) {
   return (
     <header className="no-print flex h-16 items-center justify-between border-b border-ink-300/40 bg-card px-8">
       <h1 className="text-lg font-semibold text-ink-900">{title}</h1>
-      {/* Placeholder: Eleuthia expondrá aquí el hook de sesión activa */}
-      <div className="h-9 w-9 rounded-full bg-surface" aria-hidden="true" />
+      <UserMenu />
     </header>
   );
 }

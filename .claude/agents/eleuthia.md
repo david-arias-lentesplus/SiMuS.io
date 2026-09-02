@@ -30,6 +30,27 @@ Eleuthia controla la autenticación y autorización del equipo interno (no de lo
 - **HADES**: valida expiración de sesión y accesos no autorizados.
 - **Apolo**: documenta el modelo de roles y los flujos de autenticación.
 
+## Activación real — Fase 3 (sesión 2026-09-02, "AUTENTICACIÓN, CONFIGURACIÓN Y UI POLISH")
+Eleuthia pasó de "carpeta sin código" a implementada. Ver **ADR 0007** para el diseño completo;
+resumen operativo:
+
+- **Proveedor**: Supabase Auth, email + contraseña.
+- **Modelo de roles**: `admin` | `viewer`, resuelto en `public.profiles` (una fila por usuario de
+  `auth.users`, creada automáticamente por un trigger con `role='viewer'` por defecto — nadie queda
+  con permisos de escritura sin que un admin lo suba explícitamente).
+- **Store de sesión**: `src/agents/eleuthia/store/useAuthStore.js` (Zustand) — único punto que
+  llama a `supabase.auth.*`; expone `init/signIn/signOut` y el perfil (rol) resuelto.
+- **Hook de conveniencia**: `src/agents/eleuthia/hooks/useAuth.js` — `isAdmin`/`isViewer` en vez de
+  que cada componente conozca el string exacto del rol.
+- **Invitar usuarios**: requiere el service role key de Supabase (salta RLS), así que nunca pasa
+  por el cliente — `src/agents/eleuthia/services/adminUsersService.js` llama a
+  `api/admin/invite-user.js` (Serverless Function, SOLO SERVIDOR), que verifica que quien invita
+  sea admin ANTES de invitar.
+- **La autorización real vive en RLS de Postgres**, no solo en la UI (Guards de Minerva/ítems
+  ocultos del Sidebar son la primera capa, cosmética; la que no se puede saltar es la policy SQL —
+  ver migración `002_auth_roles_countries_config.sql` de Deméter).
+
 ## Pendiente de definir
-- Proveedor exacto de autenticación (Supabase Auth con email/password, magic link, SSO corporativo).
-- Matriz definitiva de roles y permisos.
+- Recuperación de contraseña / verificación de email obligatoria (Supabase Auth las soporta
+  nativamente; no se pidieron en Fase 3, quedan para cuando el usuario las solicite).
+- SSO corporativo, si algún día se necesita más allá de email/password.
