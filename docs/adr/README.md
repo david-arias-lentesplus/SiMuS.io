@@ -13,3 +13,4 @@ Registro de decisiones de arquitectura relevantes o irreversibles del proyecto S
 
 - [0003 — Stack de frontend: React + Vite + Tailwind + Zustand](0003-stack-frontend-react-vite-tailwind-zustand.md)
 - [0004 — HubSpot: Private App Token vía proxy serverless en Vercel](0004-hubspot-private-app-token-proxy-vercel.md)
+- [0005 — Variables de entorno del cliente sin prefijo VITE_](0005-env-vars-sin-prefijo-vite.md)

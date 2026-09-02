@@ -2,7 +2,7 @@
 
 > Bitácora técnica viva del proyecto. Mantenida por Apolo. Se actualiza al final de cada sesión de trabajo relevante, nunca retroactivamente. Lo obsoleto se mueve a la sección de Historial, no se borra.
 
-Última actualización: 2026-09-02 (Fase 2: integración real con HubSpot vía Hermes).
+Última actualización: 2026-09-02 (variables de entorno del cliente sin prefijo VITE_, ADR 0005).
 
 ---
 
@@ -71,6 +71,11 @@ SiMuS.io/
 
 ## 4. Tareas a seguir (próxima sesión)
 
+0. **Usuario**: en Vercel, renombrar las variables de Supabase de `VITE_SUPABASE_URL`/
+   `VITE_SUPABASE_ANON_KEY` a `SUPABASE_URL`/`SUPABASE_ANON_KEY` (mismo valor, nuevo nombre) para
+   que coincidan con lo que el código espera desde esta sesión (ver ADR 0005). Si no se renombran,
+   el deploy de producción pierde la conexión a Supabase silenciosamente.
+
 0. **Iris**: definir e implementar el cruce real de conversiones (compras en los 7 días
    posteriores al envío) contra Metabase/Workingbits, reemplazando
    `src/agents/minerva/utils/simulateConversions.js` — mismo shape de retorno (number), mismo
@@ -97,6 +102,7 @@ _Sin incidencias registradas todavía. HADES documentará aquí cada rechazo rel
 |---|---|---|---|
 | 2026-09-02 | Apolo (detectado durante verificación de la Calculadora Híbrida) | `npm run build` falla (`Cannot find module @rollup/rollup-linux-arm64-gnu`); `npm install` para corregirlo falla con `EACCES` dentro de esta sesión. | No bloqueó la entrega — código validado con `node --check` + revisión manual. Pendiente: usuario corre `rm -rf node_modules package-lock.json && npm install` en su propia terminal (ver Historial, sesión 2026-09-02). |
 | 2026-09-02 | Apolo (Fase 2, integración HubSpot) | No se pudo probar `vercel dev` / la ruta `/api/hubspot/segment` end-to-end dentro de esta sesión (sin CLI de Vercel autenticada, y bloqueado además por la incidencia de `npm install` de la fila anterior). | No bloqueó la entrega — código validado con `node --check` + revisión manual. Pendiente: el usuario prueba con `vercel dev` (o despliega a Vercel) en su propia máquina, con `HS_PAT` configurado. |
+| 2026-09-02 | Apolo (env vars sin prefijo VITE_) | No se pudo correr `npm run dev`/build para confirmar que la app sigue conectando a Supabase después de sacarle el prefijo VITE_ a SUPABASE_URL/SUPABASE_ANON_KEY (misma incidencia de entorno de sesiones anteriores). | No bloqueó la entrega — código validado con `node --check` + revisión manual del mecanismo `loadEnv`/`define` de Vite. Pendiente: el usuario confirma en su máquina Y renombra las variables en Vercel (ver tarea 0 de la sección 4). |
 
 ## 6. Decisiones de arquitectura relevantes
 
@@ -108,6 +114,40 @@ Ver `docs/adr/`. Resumen:
 ## 7. Historial
 
 _Nada movido a historial todavía._
+
+### Sesión 2026-09-02 (env vars sin prefijo VITE_ — ADR 0005)
+
+Al configurar `HS_PAT` en Vercel (sesión anterior, Fase 2), el usuario se encontró con un aviso de
+Vercel: *"Remove the public framework prefix to keep this value private."* Ese mismo aviso también
+le salió para `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` (ahí es un falso positivo — esas dos
+están pensadas para ser públicas), pero el usuario pidió explícitamente sacarles el prefijo `VITE_`
+a las tres variables, no solo a la de HubSpot, entendiendo que eso rompía el mecanismo estándar de
+Vite (se le avisó antes de proceder).
+
+Entregado:
+
+- `vite.config.js` — ahora usa la forma de función de `defineConfig` con `loadEnv(mode,
+  process.cwd(), '')` para leer variables sin prefijo, y expone `SUPABASE_URL`/`SUPABASE_ANON_KEY`
+  al cliente explícitamente vía `define` (mapea `import.meta.env.SUPABASE_URL` a su valor literal
+  en build). Deliberadamente NO se usó `envPrefix: ''` (expondría automáticamente cualquier
+  variable del proyecto al cliente, `HS_PAT` incluido) — cada variable pública se agrega a mano.
+- `src/agents/demeter/supabaseClient.js` — lee `import.meta.env.SUPABASE_URL`/`SUPABASE_ANON_KEY`
+  (sin `VITE_`).
+- `.env.example`/`.env.local` — `VITE_SUPABASE_URL` -> `SUPABASE_URL`,
+  `VITE_SUPABASE_ANON_KEY` -> `SUPABASE_ANON_KEY`. `HS_PAT` no cambió (ya estaba sin prefijo).
+- **ADR 0005** documenta la decisión y dos consecuencias importantes: (1) cualquier variable nueva
+  que el cliente necesite leer requiere agregar su `define` a mano en `vite.config.js` — ya no es
+  automático como con el prefijo `VITE_`; (2) en Vercel, hay que actualizar el NOMBRE de las
+  variables de Supabase a `SUPABASE_URL`/`SUPABASE_ANON_KEY` (sin `VITE_`) para que coincida con lo
+  que el código ahora espera — si el usuario las deja con el nombre viejo en Vercel, el build en
+  producción se conecta a Supabase con valores vacíos (mismo fallback silencioso ya documentado en
+  `supabaseClient.js`: no rompe el build, pero sí la conexión).
+
+**No se pudo verificar con un build real** por la misma incidencia de entorno de sesiones
+anteriores (`npm install`/`npm run build` fallan dentro de este puente). Validado con `node --check`
++ revisión manual. El usuario debe confirmar con `npm run dev` (o `vercel dev`/deploy) en su propia
+máquina que la app sigue conectando a Supabase después de este cambio, ANTES de asumir que
+funciona.
 
 ### Sesión 2026-09-02 (Fase 2 — integración real con HubSpot, agente Hermes)
 

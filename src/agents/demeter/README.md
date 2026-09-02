@@ -8,8 +8,10 @@ Ver definición de rol en `.claude/agents/demeter.md`.
   extraído de `computeMetrics()`/`calculate()` del prototipo HTML adjunto por
   el usuario. Incluye RLS placeholder (ver TODO en el propio archivo).
 - `supabaseClient.js` — único punto de creación del cliente Supabase, ahora
-  vía variables de entorno (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`)
-  en vez de las credenciales que estaban hardcodeadas en el HTML original.
+  vía variables de entorno (`SUPABASE_URL`, `SUPABASE_ANON_KEY` — sin
+  prefijo `VITE_` desde la sesión 2026-09-02, inyectadas a mano vía
+  `define` en `vite.config.js`, ver ADR 0005) en vez de las credenciales
+  que estaban hardcodeadas en el HTML original.
 - `services/smsCampaignsService.js` — CRUD contra `sms_campaigns`.
 - `hooks/useSmsCampaigns.js` — hook de React que expone `campaigns`,
   `loading`, `error`, `save`, `remove`, `removeAll` a Minerva/Hefesto.
