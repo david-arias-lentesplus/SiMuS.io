@@ -29,6 +29,28 @@
 // reales contra `tools/list` y `tools/call` (`execute`) antes de dejarlo
 // así — ver HANDOFF.md para el detalle de las pruebas.
 //
+// FIX 413 PAYLOAD TOO LARGE (mismo día, sesión de "buscar grupo falla"):
+// la primera versión de fetchConversionsFromWarehouse mandaba UNA sola
+// consulta con TODOS los emails del segmento interpolados en un
+// `email IN (...)`. Para segmentos grandes de HubSpot (miles de
+// contactos), el body del POST JSON-RPC superaba el límite del
+// body-parser del servidor MCP (`supergateway`/`raw-body`) y este
+// respondía 413 sin ejecutar nada. Se midió el límite real contra el
+// servidor en vivo con requests sintéticos de tamaño creciente:
+// 500/1000/2000/3000/3500 emails (12.6KB/25.1KB/52.1KB/79.1KB/92.6KB)
+// devolvieron 200; 4000/5000 emails (106.1KB/133.1KB) devolvieron 413 —
+// el límite real cae entre 92.6KB y 106.1KB (muy probablemente el default
+// de 100KB de `raw-body`). Se eligió un tamaño de lote conservador,
+// `EMAIL_BATCH_SIZE = 800` (~4x de margen bajo el límite medido,
+// contemplando que emails reales pueden ser más largos que los
+// sintéticos usados en la prueba), y ahora la función parte la lista de
+// emails en lotes de ese tamaño, ejecuta una consulta `execute` por lote
+// (secuencial, reusando los mismos filtros de fecha/business_unit/status)
+// y suma `conversions`/`total_sales` de todos los lotes. Esto es
+// matemáticamente seguro porque `email` es una clave de partición
+// disjunta entre lotes (un mismo email no puede caer en dos lotes
+// distintos, así que no hay doble conteo de ventas).
+//
 // Reemplaza src/agents/minerva/utils/simulateConversions.js (eliminado en
 // esta misma sesión). Contrato de negocio (verificado por el usuario
 // contra el esquema real de `silver.sales` en la base DWH de Metabase):
@@ -46,7 +68,8 @@
 //
 // Devuelve: { conversions, totalSales } — conversions = conteo de
 // transacciones únicas válidas (`count(distinct sale_id)`), totalSales =
-// suma de `total` (revenue) de esas mismas transacciones.
+// suma de `gmv_usd` (revenue en USD) de esas mismas transacciones,
+// agregados a través de todos los lotes de emails.
 
 export class MetabaseApiError extends Error {
   constructor(message, status) {
@@ -69,6 +92,10 @@ export class MetabaseApiError extends Error {
 // monedas sin sentido; `gmv_usd` es comparable entre países).
 const SALES_TABLE = 'silver.sales';
 const REVENUE_COLUMN = 'gmv_usd';
+
+// Tamaño máximo de emails por consulta al MCP de Metabase — ver nota
+// "FIX 413 PAYLOAD TOO LARGE" arriba para cómo se determinó este valor.
+const EMAIL_BATCH_SIZE = 800;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Whitelist estricta de business_unit válidos (ver countries.js) — nunca
@@ -108,6 +135,15 @@ function sanitizeEmails(emails) {
     if (email && EMAIL_RE.test(email)) seen.add(email);
   }
   return Array.from(seen);
+}
+
+/** Parte un array en sub-arrays de a lo sumo `size` elementos. */
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
 }
 
 function addDaysISO(dateStr, days) {
@@ -215,6 +251,29 @@ async function callMcpTool(toolName, args, config) {
 }
 
 /**
+ * Ejecuta la consulta de conversiones para UN lote de emails (a lo sumo
+ * EMAIL_BATCH_SIZE) y devuelve { conversions, totalSales } de ese lote.
+ */
+async function fetchConversionsForBatch({ emailBatch, businessUnit, sendDate }, config) {
+  const query = buildQuery({ emails: emailBatch, businessUnit, sendDate });
+  const result = await callMcpTool(
+    'execute',
+    { database_id: config.databaseId, query, row_limit: 5 },
+    config
+  );
+
+  if (result?.success === false) {
+    throw new MetabaseApiError('La consulta a Metabase no se ejecutó correctamente.', 502);
+  }
+
+  const row = result?.data?.['0'] ?? result?.data?.[0];
+  return {
+    conversions: Number(row?.conversions) || 0,
+    totalSales: Number(row?.total_sales) || 0,
+  };
+}
+
+/**
  * Punto de entrada único que /api/metabase/conversions.js debe llamar.
  * @param {{emails: string[], businessUnit: string, sendDate: string}} input
  *   sendDate en formato 'YYYY-MM-DD' (mismo formato del <input type="date">
@@ -237,20 +296,24 @@ export async function fetchConversionsFromWarehouse({ emails, businessUnit, send
     throw new MetabaseApiError('"sendDate" debe tener formato YYYY-MM-DD.', 400);
   }
 
-  const query = buildQuery({ emails: cleanEmails, businessUnit, sendDate });
-  const result = await callMcpTool(
-    'execute',
-    { database_id: config.databaseId, query, row_limit: 5 },
-    config
-  );
+  // Segmentos grandes de HubSpot pueden traer miles de emails: se parte
+  // la lista en lotes para no superar el límite de tamaño de body del
+  // servidor MCP (ver nota "FIX 413 PAYLOAD TOO LARGE" al inicio del
+  // archivo). Se ejecuta un lote a la vez (no en paralelo) para no
+  // saturar al servidor MCP con ráfagas de queries simultáneas contra el
+  // mismo warehouse.
+  const batches = chunkArray(cleanEmails, EMAIL_BATCH_SIZE);
 
-  if (result?.success === false) {
-    throw new MetabaseApiError('La consulta a Metabase no se ejecutó correctamente.', 502);
+  let totalConversions = 0;
+  let totalSales = 0;
+  for (const emailBatch of batches) {
+    const batchResult = await fetchConversionsForBatch(
+      { emailBatch, businessUnit, sendDate },
+      config
+    );
+    totalConversions += batchResult.conversions;
+    totalSales += batchResult.totalSales;
   }
 
-  const row = result?.data?.['0'] ?? result?.data?.[0];
-  return {
-    conversions: Number(row?.conversions) || 0,
-    totalSales: Number(row?.total_sales) || 0,
-  };
+  return { conversions: totalConversions, totalSales };
 }

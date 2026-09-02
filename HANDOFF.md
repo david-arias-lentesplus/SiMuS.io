@@ -29,6 +29,7 @@ Desarrollar una plataforma para extraer, consolidar y analizar las métricas de 
 - [x] Sesión 2026-09-02: corregido el 404 de Vercel al recargar rutas de cliente (`/calculadora`, `/historico`) — faltaba `vercel.json` con rewrite a `index.html` excluyendo `/api/*`. Pendiente de deploy.
 - [ ] **Hallazgo de la auditoría de esta sesión, no resuelto:** la app no tiene autenticación (`src/agents/eleuthia/` solo tiene el README) — cualquiera con la URL puede leer el histórico completo y aprobar/guardar campañas. Ver `docs/fase3-analisis.md` sección 2, prioridad más alta para la siguiente fase.
 - [x] Sesión 2026-09-02 (ajuste de integración Metabase): cruce real de conversiones y ventas implementado — ver ADR 0006. `simulateConversions.js` eliminado; `useCampaignCalculator.searchSegment()` ahora completa tamaño de muestra, conversiones Y ventas totales, las tres reales. Corregido el mismo día: la conexión real es a un servidor MCP (`metabase-mcp`), no a la API REST de Metabase — reescrito y probado end-to-end con datos reales (ver ADR 0006). `METABASE_MCP_URL`/`METABASE_MCP_KEY`/`METABASE_DATABASE_ID` ya están en `.env.local`; pendiente que el usuario los copie a Vercel y valide en producción.
+- [x] Sesión 2026-09-02 (fix 413 Payload Too Large): `fetchConversionsFromWarehouse` ahora parte la lista de emails en lotes de `EMAIL_BATCH_SIZE = 800` (medido empíricamente contra el servidor MCP real — el límite real cae entre 92.6KB y 106.1KB de body) y suma resultados entre lotes. Ver ADR 0006 (addendum) y HANDOFF sección 7 para el detalle de las mediciones. Pendiente que el usuario confirme en Vercel que el botón "Buscar" ya no falla con 413 para grupos grandes.
 - [x] Sesión 2026-09-01: `.env.local` completado y corregido (tenía sintaxis inválida: comillas y `;` como si fuera JS, en vez de `CLAVE=valor` plano). El Dashboard ya conecta al proyecto Supabase real (`qzothtkbqnorwmhgxktw`) y confirma 17 campañas históricas reales (jun-2026).
 - [x] Sesión 2026-09-01: se detectó y corrigió un bug de Minerva — el filtro de fecha por defecto (`dateRange: '30d'`) ocultaba TODO el histórico real (más antiguo que 30 días) tanto en el Dashboard como en Histórico. Default corregido a `'all'`.
 - [ ] **NO aplicar todavía** el bloque de RLS de `001_sms_campaigns.sql` contra el proyecto real: se verificó que hoy la tabla acepta lectura con la anon key sin autenticación (no hay login construido); restringir a rol `authenticated` rompería la app hasta que Eleuthia defina auth. Ver advertencia en el propio archivo SQL.
@@ -101,6 +102,9 @@ SiMuS.io/
    - Probar el flujo completo (Calculadora -> API Route -> servicio -> MCP) en un despliegue real
      de Vercel — lo probado en esta sesión fue una llamada directa al servidor MCP desde el
      entorno de desarrollo, no el pipeline completo.
+   - ~~Fix de 413 Payload Too Large al buscar grupos con segmentos grandes~~ — **Resuelto en
+     esta misma sesión** con batching de emails (`EMAIL_BATCH_SIZE = 800`), ver ADR 0006 addendum.
+     Falta que el usuario lo confirme en Vercel.
 0. **Usuario**: configurar `HS_PAT` (Private App Token de HubSpot) en `.env.local` para probar
    localmente con `vercel dev`, y en Vercel Project Settings -> Environment Variables para
    producción. Ver `.env.example` y ADR 0004.
@@ -125,6 +129,7 @@ _Sin incidencias registradas todavía. HADES documentará aquí cada rechazo rel
 | Fecha | Agente que reporta | Descripción | Resolución |
 |---|---|---|---|
 | 2026-09-02 | Usuario (reportado en producción, después del deploy) | La gráfica de "Actividad de Campañas" rompía toda la app en producción con `Uncaught Error: "bar" is not a registered controller.` — `ActivityChart.jsx` registraba escalas/elementos de Chart.js (`BarElement`, `LineElement`, etc.) pero no los *controllers* (`BarController`, `LineController`), que Chart.js v4 exige por separado. | Corregido: se agregó `BarController` y `LineController` al import y al `ChartJS.register(...)` en `src/agents/hefesto/components/ActivityChart.jsx`. No se pudo probar en un navegador real dentro de este puente (sin `npm run build`); el usuario debe confirmar tras el próximo deploy. |
+| 2026-09-02 | Usuario (reportado en producción, después de subir el ajuste de `gmv_usd`) | El botón "Buscar" de un grupo en la Calculadora fallaba con `413: PayloadTooLargeError: request entity too large` (body-parser del servidor MCP de Metabase) y no traía datos — la consulta interpolaba todos los emails del segmento en un único `email IN (...)`, y para segmentos grandes el body superaba el límite del servidor. | Corregido: `metabaseService.js` ahora parte los emails en lotes de `EMAIL_BATCH_SIZE = 800` (medido empíricamente: 3500 emails/92.6KB devolvió 200, 4000/106.1KB devolvió 413) y suma `conversions`/`total_sales` entre lotes. Validado con `node --check` y mediciones de payload contra el servidor real; no se pudo probar el flujo completo en un navegador real desde este puente — el usuario debe confirmar en Vercel. |
 | 2026-09-02 | Apolo (detectado durante verificación de la Calculadora Híbrida) | `npm run build` falla (`Cannot find module @rollup/rollup-linux-arm64-gnu`); `npm install` para corregirlo falla con `EACCES` dentro de esta sesión. | No bloqueó la entrega — código validado con `node --check` + revisión manual. Pendiente: usuario corre `rm -rf node_modules package-lock.json && npm install` en su propia terminal (ver Historial, sesión 2026-09-02). |
 | 2026-09-02 | Apolo (Fase 2, integración HubSpot) | No se pudo probar `vercel dev` / la ruta `/api/hubspot/segment` end-to-end dentro de esta sesión (sin CLI de Vercel autenticada, y bloqueado además por la incidencia de `npm install` de la fila anterior). | No bloqueó la entrega — código validado con `node --check` + revisión manual. Pendiente: el usuario prueba con `vercel dev` (o despliega a Vercel) en su propia máquina, con `HS_PAT` configurado. |
 | 2026-09-02 | Apolo (env vars sin prefijo VITE_) | No se pudo correr `npm run dev`/build para confirmar que la app sigue conectando a Supabase después de sacarle el prefijo VITE_ a SUPABASE_URL/SUPABASE_ANON_KEY (misma incidencia de entorno de sesiones anteriores). | No bloqueó la entrega — código validado con `node --check` + revisión manual del mecanismo `loadEnv`/`define` de Vite. Pendiente: el usuario confirma en su máquina Y renombra las variables en Vercel (ver tarea 0 de la sección 4). |
@@ -256,6 +261,34 @@ la etiqueta ahora sí describe lo que muestra. Verificado con la misma venta rea
 la integración: `total=16278` (moneda local) -> `gmv_usd=4.35`. Con este ajuste el usuario dijo
 que ya sube a Vercel.
 
+
+**Cuarta actualización, mismo día — fix de 413 Payload Too Large al buscar un grupo:** el usuario
+reportó, tras subir el ajuste de `gmv_usd` a Vercel, que el botón "Buscar" de un grupo en la
+Calculadora fallaba con `Servidor MCP de Metabase respondió 413: ... PayloadTooLargeError: request
+entity too large ... at readStream (.../supergateway/node_modules/body-parser/node_modules/raw-body/index.js:163:17)`
+y no traía datos. Causa: la consulta original interpolaba TODOS los emails del segmento de HubSpot
+en un único `email IN (...)` — para segmentos grandes (miles de contactos) el body del POST
+JSON-RPC superaba el límite del body-parser del servidor MCP.
+
+Se midió el límite real contra el servidor en vivo con requests sintéticos de tamaño creciente
+(mismo shape exacto que produce el código): 500/1000/2000/3000/3500 emails (12.6KB/25.1KB/52.1KB/
+79.1KB/92.6KB) devolvieron 200; 4000/5000 emails (106.1KB/133.1KB) devolvieron 413 — el límite real
+cae entre 92.6KB y 106.1KB (muy probablemente el default de 100KB de `raw-body`, la librería del
+stack trace).
+
+Fix en `src/agents/hermes/services/metabaseService.js`: se agregó `EMAIL_BATCH_SIZE = 800`
+(~4x de margen bajo el límite medido) y la función `fetchConversionsFromWarehouse` ahora parte la
+lista de emails sanitizada en lotes de ese tamaño, ejecuta una consulta `execute` por lote
+(secuencial, reutilizando los mismos filtros de business_unit/sendDate/status) y suma
+`conversions`/`total_sales` de todos los lotes — seguro porque `email` es una clave de partición
+disjunta entre lotes, así que no hay doble conteo. `api/metabase/conversions.js` y el resto de la
+cadena (cliente, hook de la Calculadora) no cambiaron — el batching es interno y transparente.
+Validado con `node --check` (sintaxis OK) y con las mediciones de payload de la tabla arriba contra
+el servidor MCP real; no se pudo probar el flujo completo en un navegador real contra un segmento
+grande desde este entorno de desarrollo (misma limitación de siempre, sin `vercel dev` en este
+puente) — el usuario debe confirmar en Vercel que "Buscar" ya no falla con 413. Detalle completo,
+incluida la tabla de mediciones y una nota sobre el límite de tiempo de ejecución de Vercel para
+segmentos muy grandes, en el addendum de **ADR 0006**.
 
 ### Sesión 2026-09-02 (fix de routing SPA, gráfica de actividad real, auditoría en vivo y exploración de Iris/Metabase)
 

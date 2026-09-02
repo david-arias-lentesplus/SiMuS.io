@@ -107,3 +107,60 @@ negocio a aplicar. Verificado en esta sesión contra el esquema real: `silver.sa
   servidor MCP) sigue sin probarse dentro de un despliegue real de Vercel (sin `vercel dev` en
   este puente, ver incidencia de entorno recurrente en `HANDOFF.md`); el usuario la prueba
   directamente en Vercel.
+
+## Addendum — fix de 413 Payload Too Large (mismo día, sesión de "buscar grupo falla")
+
+Tras el punto 7 anterior, el usuario probó el flujo completo en Vercel y reportó, al buscar un
+grupo con un segmento grande de HubSpot: `Servidor MCP de Metabase respondió 413: ...
+PayloadTooLargeError: request entity too large ... at readStream
+(.../supergateway/node_modules/body-parser/node_modules/raw-body/index.js:163:17)` — sin devolver
+datos.
+
+**Causa:** la consulta original interpolaba TODOS los emails del segmento en un único
+`email IN (...)`. Para segmentos con miles de contactos, el body del POST JSON-RPC superaba el
+límite de tamaño que el body-parser del servidor MCP acepta.
+
+**Medición del límite real:** se armaron requests sintéticos (mismo shape exacto que
+`callMcpTool`/`buildQuery` producen) con 500/1000/2000/3000/3500/4000/5000 emails y se probaron
+contra el servidor MCP en vivo:
+
+| emails | bytes del body | resultado |
+|---|---|---|
+| 500 | 12,578 | 200 |
+| 1000 | 25,079 | 200 |
+| 2000 | 52,079 | 200 |
+| 3000 | 79,079 | 200 |
+| 3500 | 92,579 | 200 |
+| 4000 | 106,079 | 413 |
+| 5000 | 133,079 | 413 |
+
+El límite real cae entre 92.6KB y 106.1KB — muy probablemente el default de 100KB de `raw-body`
+(la librería que aparece en el stack trace del error).
+
+**Fix implementado en `src/agents/hermes/services/metabaseService.js`:** se agregó
+`EMAIL_BATCH_SIZE = 800` (margen de ~4x bajo el límite medido, para absorber que emails reales
+pueden ser más largos que los sintéticos `userN@exampleN.com` usados en la prueba). La lista de
+emails sanitizada se parte en lotes de ese tamaño (`chunkArray`) y `fetchConversionsFromWarehouse`
+ahora ejecuta una llamada `execute` por lote, secuencialmente (no en paralelo, para no saturar el
+servidor MCP), reutilizando los mismos filtros de `business_unit`/`sendDate`/`status` en cada
+lote, y suma `conversions`/`total_sales` de todos los lotes antes de devolver el resultado. Esto es
+seguro porque `email` es una clave de partición disjunta: ningún email puede caer en dos lotes a la
+vez, así que no hay riesgo de doble conteo de ventas al sumar across lotes.
+
+`api/metabase/conversions.js` y el resto de la cadena (`fetchConversionsFromMetabase.js`,
+`useCampaignCalculator.js`) no cambiaron — el batching es interno a `metabaseService.js` y
+transparente para quien lo llama.
+
+**Validado con:** `node --check` sobre el archivo modificado (sintaxis OK) y las mediciones de
+tamaño de payload contra el servidor MCP real de la tabla arriba. No se pudo probar el flujo
+completo end-to-end en un navegador real contra un segmento grande de HubSpot desde este entorno
+de desarrollo (misma limitación de siempre: sin `vercel dev` en este puente) — el usuario debe
+confirmar en Vercel que el botón "Buscar" ya no falla con 413 para grupos grandes.
+
+**Pendiente a considerar (no bloqueante, no pedido explícitamente):** con segmentos muy grandes
+(por ejemplo, >8000-10000 emails => 10+ lotes secuenciales), el tiempo total de la función
+serverless podría acercarse al límite de ejecución de Vercel (10s en el plan Hobby). Si esto llega
+a pasar en producción, las opciones son: aumentar el plan/timeout de la función, paralelizar los
+lotes con un límite de concurrencia, o aumentar `EMAIL_BATCH_SIZE` una vez que se confirme con más
+certeza dónde está el límite real del servidor MCP (entre 92.6KB y 106.1KB, sin acotar más para no
+gastar más llamadas de prueba de las necesarias).
