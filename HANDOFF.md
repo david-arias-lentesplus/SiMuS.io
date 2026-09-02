@@ -28,6 +28,7 @@ Desarrollar una plataforma para extraer, consolidar y analizar las métricas de 
 - [x] Sesión 2026-09-02: gráfica de actividad implementada con datos reales de Supabase (`useCampaignActivitySeries.js` + `ActivityChart.jsx`, Chart.js). Pendiente de que el usuario despliegue para confirmarla visualmente en producción.
 - [x] Sesión 2026-09-02: corregido el 404 de Vercel al recargar rutas de cliente (`/calculadora`, `/historico`) — faltaba `vercel.json` con rewrite a `index.html` excluyendo `/api/*`. Pendiente de deploy.
 - [ ] **Hallazgo de la auditoría de esta sesión, no resuelto:** la app no tiene autenticación (`src/agents/eleuthia/` solo tiene el README) — cualquiera con la URL puede leer el histórico completo y aprobar/guardar campañas. Ver `docs/fase3-analisis.md` sección 2, prioridad más alta para la siguiente fase.
+- [x] Sesión 2026-09-02 (ajuste de integración Metabase): cruce real de conversiones y ventas implementado — ver ADR 0006. `simulateConversions.js` eliminado; `useCampaignCalculator.searchSegment()` ahora completa tamaño de muestra, conversiones Y ventas totales, las tres reales. Corregido el mismo día: la conexión real es a un servidor MCP (`metabase-mcp`), no a la API REST de Metabase — reescrito y probado end-to-end con datos reales (ver ADR 0006). `METABASE_MCP_URL`/`METABASE_MCP_KEY`/`METABASE_DATABASE_ID` ya están en `.env.local`; pendiente que el usuario los copie a Vercel y valide en producción.
 - [x] Sesión 2026-09-01: `.env.local` completado y corregido (tenía sintaxis inválida: comillas y `;` como si fuera JS, en vez de `CLAVE=valor` plano). El Dashboard ya conecta al proyecto Supabase real (`qzothtkbqnorwmhgxktw`) y confirma 17 campañas históricas reales (jun-2026).
 - [x] Sesión 2026-09-01: se detectó y corrigió un bug de Minerva — el filtro de fecha por defecto (`dateRange: '30d'`) ocultaba TODO el histórico real (más antiguo que 30 días) tanto en el Dashboard como en Histórico. Default corregido a `'all'`.
 - [ ] **NO aplicar todavía** el bloque de RLS de `001_sms_campaigns.sql` contra el proyecto real: se verificó que hoy la tabla acepta lectura con la anon key sin autenticación (no hay login construido); restringir a rol `authenticated` rompería la app hasta que Eleuthia defina auth. Ver advertencia en el propio archivo SQL.
@@ -78,15 +79,28 @@ SiMuS.io/
    que coincidan con lo que el código espera desde esta sesión (ver ADR 0005). Si no se renombran,
    el deploy de producción pierde la conexión a Supabase silenciosamente.
 
-0. **Iris**: definir e implementar el cruce real de conversiones (compras en los 7 días
-   posteriores al envío) contra Metabase/Workingbits, reemplazando
-   `src/agents/minerva/utils/simulateConversions.js` — mismo shape de retorno (number), mismo
-   patrón que se usó para `fetchSegmentFromHubSpot.js` en la Fase 2. **Bloqueado (sesión
-   2026-09-02):** se exploró `ss.silver_sales` y tablas relacionadas vía `livo_metabase` y no
-   tienen ninguna columna de cliente (email/teléfono/documento/customer_id) que se pueda cruzar
-   con `hubspot_contacts`. Se necesita que alguien del equipo de datos confirme qué columna o
-   tabla puente vincula un pedido con la identidad del cliente antes de escribir el query real.
-   Ver `docs/fase3-analisis.md` sección 4 para el detalle y la forma del query objetivo.
+0. ~~**Iris**: definir e implementar el cruce real de conversiones~~ — **Resuelto en sesión
+   2026-09-02 ("ajuste de integración Metabase"), pero implementado en Hermes por instrucción
+   explícita del usuario, no en Iris** (ver ADR 0006 y la nota de dominio en
+   `.claude/agents/hermes.md`/`.claude/agents/iris.md`). El usuario verificó que `silver.sales`
+   (base DWH, distinta de `ss.silver_sales` que se había explorado antes) sí tiene columna
+   `email`. Código: `src/agents/hermes/services/metabaseService.js` + `api/metabase/conversions.js`
+   + `src/agents/minerva/utils/fetchConversionsFromMetabase.js`. `simulateConversions.js` fue
+   eliminado. `METABASE_DATABASE_ID=2` confirmado por el usuario como el mismo id en cualquier
+   entorno. `created_at` confirmado explícitamente por el usuario como la columna correcta de
+   "fecha de compra". **Corrección de arquitectura, mismo día:** el usuario encontró la credencial
+   real de un proyecto anterior (`METABASE_MCP_URL`/`METABASE_MCP_KEY`) y, al probarla, resultó
+   ser el servidor MCP `metabase-mcp` (JSON-RPC 2.0 + SSE, auth por `?api_key=` en la URL — NO la
+   API REST de Metabase que se había asumido). `metabaseService.js` se reescribió para hablar ese
+   protocolo y se probó end-to-end contra datos reales (un email real de `silver.sales` devolvió
+   exactamente el `{conversions, totalSales}` esperado — ver ADR 0006 para el detalle completo de
+   las pruebas). Los tres valores ya están en `.env.local`. **Sigue pendiente:**
+   - Que el usuario copie `METABASE_MCP_URL`/`METABASE_MCP_KEY`/`METABASE_DATABASE_ID` a Vercel.
+   - Confirmar si conviene generar una API key de Metabase MCP dedicada a SiMuS.io en vez de seguir
+     usando la de un proyecto anterior (riesgo: si ese proyecto la rota, esto se rompe sin aviso).
+   - Probar el flujo completo (Calculadora -> API Route -> servicio -> MCP) en un despliegue real
+     de Vercel — lo probado en esta sesión fue una llamada directa al servidor MCP desde el
+     entorno de desarrollo, no el pipeline completo.
 0. **Usuario**: configurar `HS_PAT` (Private App Token de HubSpot) en `.env.local` para probar
    localmente con `vercel dev`, y en Vercel Project Settings -> Environment Variables para
    producción. Ver `.env.example` y ADR 0004.
@@ -123,6 +137,125 @@ Ver `docs/adr/`. Resumen:
 - **ADR 0002**: Supabase como persistencia central para superar el límite de 90 días de retención de Workingbits.
 
 ## 7. Historial
+
+### Sesión 2026-09-02 (ajuste de integración Metabase — cruce real de conversiones, agentes Hermes y Deméter)
+
+El usuario envió una instrucción de sistema de agentes corrigiendo el hallazgo de la sesión
+anterior (que había concluido que el warehouse no tenía columna de cliente para cruzar ventas
+contra HubSpot): verificó que la tabla **`silver.sales`** (schema `silver`, base **DWH** —
+distinta de `ss.silver_sales` en `livo_command_center`, que fue la que se exploró antes) sí tiene
+una columna `email` directamente usable, y dio la especificación exacta de 4 filtros de negocio
+obligatorios para el cruce.
+
+Verificado en esta sesión contra el esquema real de `silver.sales` (vía el conector de solo
+lectura usado en desarrollo): existen `email`, `business_unit`, `status`, `sale_id`, `created_at`
+y `total` con los tipos esperados. Los valores reales de `business_unit` confirman el mapeo que
+dio el usuario (`CO`, `AR`, `CL`, `MX`, `BR`, `LV` existen como códigos reales en la columna,
+aunque también existe un `NL` separado — el usuario confirmó que "Brasil NL" mapea a `BR`, no a
+`NL`, a pesar de la coincidencia de nombre). Los valores reales de `status` confirman que un
+`NOT ILIKE '%cancel%'` cubre todas las variantes de cancelación mencionadas (`canceled`,
+`CANCELADO`, `Pedido Cancelado-Pedido CANCELADO`, `Cancelado`, etc.) sin necesidad de mantener una
+lista cerrada.
+
+Entregado en esta sesión — **implementado en Hermes por instrucción explícita del usuario, no en
+Iris** (ver nota de dominio en `.claude/agents/hermes.md`/`.claude/agents/iris.md` y el detalle
+completo en **ADR 0006**, nuevo):
+
+- `src/agents/minerva/constants/countries.js`: se agregó `businessUnit` a cada país (único lugar
+  donde vive este mapeo).
+- `src/agents/hermes/services/metabaseService.js` (NUEVO, SOLO SERVIDOR): construye y ejecuta el
+  SQL nativo contra `silver.sales` vía la API REST de Metabase (`POST /api/dataset`, autenticado
+  con API key en el header `x-api-key`, mismo patrón que `HS_PAT` para HubSpot — ver ADR 0004).
+  Aplica los 4 filtros exactamente como los especificó el usuario: `email IN (...)` (con
+  validación de forma de cada email antes de interpolar), ventana `created_at` entre `sendDate` y
+  `sendDate + 7 días`, `business_unit = <mapeado>` (contra una whitelist cerrada de 6 valores), y
+  `status NOT ILIKE '%cancel%'`. Devuelve `{ conversions, totalSales }` —
+  `count(distinct sale_id)` y `sum(total)` respectivamente.
+- `api/metabase/conversions.js` (NUEVO, raíz del repo — mismo motivo que `api/hubspot/segment.js`,
+  Vercel exige que las Serverless Functions vivan en `/api` en un proyecto Vite): único punto HTTP
+  que el cliente puede llamar, `POST { emails, businessUnit, sendDate }` -> `{ conversions,
+  totalSales }`.
+- `src/agents/minerva/utils/fetchConversionsFromMetabase.js` (NUEVO): cliente de esa ruta,
+  reemplaza a `simulateConversions.js` (**eliminado** en esta sesión).
+- `src/agents/minerva/hooks/useCampaignCalculator.js`: `searchSegment()` ahora encadena
+  HubSpot (tamaño de muestra + emails) -> Metabase (conversiones + ventas reales) y completa los
+  tres campos (`N`, `C`, `S`) del grupo correspondiente con datos reales — antes `S` ("Total
+  ventas") se dejaba siempre en manual porque no existía ninguna fuente real para completarlo.
+  Se agregó una validación: si el usuario no eligió fecha de envío, el botón "Buscar" muestra un
+  error pidiéndosela antes de gastar la consulta a HubSpot.
+- `src/agents/hefesto/components/calculator/SegmentLookupField.jsx`: copy actualizado — ya no
+  dice "conversiones simuladas" en ningún lado; el botón de carga dice "Buscando en HubSpot +
+  Metabase...".
+- `.env.example`/`.env.local`: se agregaron `METABASE_URL`, `METABASE_API_KEY` y
+  `METABASE_DATABASE_ID` (sin prefijo `VITE_`, mismo patrón que `HS_PAT` — nunca deben llegar al
+  cliente). **El usuario debe completar los valores reales** antes de que esto funcione en
+  cualquier entorno; en `.env.local` quedaron vacíos.
+- **ADR 0006** (nuevo): documenta la decisión completa, incluida la excepción de dominio
+  (Metabase implementado en Hermes en vez de Iris, por instrucción explícita del usuario) y los
+  puntos que quedan pendientes de confirmar con el equipo de datos.
+
+**Pendiente explícito para el usuario / próxima sesión** (repetido también en la sección 4):
+configurar las tres variables de Metabase en Vercel; confirmar que `METABASE_DATABASE_ID=2` sea
+correcto en la instancia de producción (no solo en el entorno de desarrollo usado para verificar
+el esquema); confirmar si `created_at` es la columna correcta de "fecha de compra" o si debería
+ser otra; y probar el flujo completo en un navegador real con un segmento y fecha conocidos, ya
+que — como en toda esta carpeta desde que empezó la incidencia de `npm install`/Rollup — no se
+pudo correr `vercel dev` dentro de este puente para probarlo end-to-end. Todo el código nuevo se
+validó con `node --check` (los `.js`) y revisión manual (el único `.jsx` tocado, `SegmentLookupField.jsx`,
+fue un cambio de copy sin lógica nueva).
+
+**Actualización, mismo día:** el usuario respondió a los 4 pendientes de arriba. Confirmó que
+`METABASE_DATABASE_ID` es el mismo en cualquier entorno (el conector habla directo con la
+instancia real) — se dejó `METABASE_DATABASE_ID=2` ya cargado en `.env.local`. Confirmó
+`created_at` como la columna correcta de "fecha de compra" — se actualizó el comentario en
+`metabaseService.js` para reflejar que es una decisión confirmada, no una suposición. Pidió que
+`.env.local` se completara también con `METABASE_URL`/`METABASE_API_KEY` "que proporciona el
+conector MCP" — **no fue posible**: se intentó (`retrieve` sobre la base id=2 vía el conector) y
+la API de Metabase no devuelve host/usuario/API key de la conexión en esa respuesta bajo ningún
+parámetro disponible en las herramientas de este asistente; ese dato simplemente no está expuesto
+por ningún tool del conector. Se dejó en `.env.local` un comentario explicando esto y dónde
+conseguir esos dos valores a mano (URL: la que usa el usuario para entrar a Metabase en el
+navegador; API key: Metabase -> Admin settings -> Authentication -> API Keys, requiere permisos de
+administrador). El usuario dijo que con estos ajustes prueba directamente en Vercel.
+
+**Segunda actualización, mismo día — corrección de arquitectura:** el usuario encontró una
+credencial real de un proyecto anterior (`METABASE_MCP_URL=https://mcp.livocompany.com/metabase/mcp`
++ `METABASE_MCP_KEY=...`) y pidió replicarla acá y probar la conexión. Se probó con `curl` directo
+contra el endpoint (varias formas de autenticación: `Authorization: Bearer` y `x-api-key`/`apikey`
+como headers devolvieron 401; `?api_key=...` como query param funcionó) y resultó ser **el
+servidor MCP `metabase-mcp` v1.1.5** — el mismo conector de solo lectura que este asistente usa en
+desarrollo (`mcp__livo_metabase__*`), NO la API REST de Metabase que se había asumido al escribir
+la primera versión de `metabaseService.js`. Confirmado con `tools/list` (mismas 6 tools:
+`search`, `retrieve`, `list`, `execute`, `export`, `clear_cache`) y con una **prueba end-to-end
+real**: se armó exactamente el SQL que arma el servicio (email + ventana de 7 días + business_unit
++ exclusión de canceladas) con un email real tomado de `silver.sales`
+(`mabalejo89@gmail.com`, venta de `total=16278` el 2026-08-01 en `CO`) y el resultado devuelto fue
+`{conversions: 1, total_sales: 16278}` — exactamente lo esperado.
+
+`src/agents/hermes/services/metabaseService.js` se reescribió por completo para hablar el
+protocolo real (JSON-RPC 2.0 sobre HTTP POST, respuesta en formato SSE, autenticado con
+`?api_key=` en la URL — nunca por header) en vez de la API REST de Metabase asumida antes. Las env
+vars cambiaron de nombre: `METABASE_URL`/`METABASE_API_KEY` -> `METABASE_MCP_URL`/`METABASE_MCP_KEY`
+(mismo significado de "no exponer al cliente", mismo patrón que `HS_PAT`). Los tres valores reales
+(URL, key y `METABASE_DATABASE_ID=2`) ya quedaron en `.env.local` — el usuario los copia a Vercel
+para probar. `.env.example`, ADR 0006 y esta misma entrada de HANDOFF se actualizaron para
+reflejar el protocolo correcto.
+
+**Riesgo que queda documentado, no resuelto:** `METABASE_MCP_KEY` es una credencial de un proyecto
+anterior, no generada específicamente para SiMuS.io — si ese proyecto la rota/revoca, esta
+integración se rompe sin aviso. Vale la pena que el usuario confirme si conviene pedir una API key
+nueva y dedicada en el servidor MCP.
+
+**Tercera actualización, mismo día — último ajuste antes de desplegar:** el usuario pidió usar
+`gmv_usd` (revenue ya convertido a dólares) en vez de `total` (moneda local de cada
+`business_unit`) para la columna de ventas. Cambio de una línea en `metabaseService.js`
+(`REVENUE_COLUMN`). Se aprovechó para notar que esto también corrige una inconsistencia que ya
+existía: la etiqueta del campo en la Calculadora dice "Total ventas SMS (USD)"
+(`CampaignForm.jsx`), pero con `total` el dato real era moneda local, no dólares — con `gmv_usd`
+la etiqueta ahora sí describe lo que muestra. Verificado con la misma venta real usada para probar
+la integración: `total=16278` (moneda local) -> `gmv_usd=4.35`. Con este ajuste el usuario dijo
+que ya sube a Vercel.
+
 
 ### Sesión 2026-09-02 (fix de routing SPA, gráfica de actividad real, auditoría en vivo y exploración de Iris/Metabase)
 

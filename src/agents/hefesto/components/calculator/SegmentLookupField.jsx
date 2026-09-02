@@ -1,9 +1,9 @@
 // Hefesto — campo reutilizable para las secciones "Grupo SMS" y "Grupo
 // Control" del formulario de la calculadora: nombre de lista de HubSpot +
 // botón "Buscar". Componente 100% presentacional: la búsqueda real
-// (Hermes -> HubSpot, Fase 2) y la simulación de conversiones (pendiente
-// de Iris/Metabase) viven en useCampaignCalculator (Minerva); este
-// componente solo dispara la acción que recibe por props.
+// (Hermes -> HubSpot, Fase 2) y el cruce real de conversiones/ventas
+// (Hermes -> Metabase, sesión 2026-09-02) viven en useCampaignCalculator
+// (Minerva); este componente solo dispara la acción que recibe por props.
 export default function SegmentLookupField({ segmentName, onSegmentNameChange, onSearch, loading, error }) {
   return (
     <div>
@@ -24,13 +24,13 @@ export default function SegmentLookupField({ segmentName, onSegmentNameChange, o
           disabled={loading}
           className="whitespace-nowrap rounded-lg bg-brand-indigo px-4 py-2 text-sm font-medium text-white hover:bg-brand-indigo/90 disabled:opacity-50"
         >
-          {loading ? 'Buscando en HubSpot...' : 'Buscar'}
+          {loading ? 'Buscando en HubSpot + Metabase...' : 'Buscar'}
         </button>
       </div>
       {error ? <p className="mt-1 text-xs text-state-danger">{error}</p> : null}
       <p className="mt-1 text-xs italic text-ink-400">
-        Tamaño de muestra: real, vía HubSpot (Hermes). Conversiones: cruce simulado —
-        integración con Metabase/Workingbits pendiente (Iris).
+        Tamaño de muestra, conversiones y ventas: reales, vía HubSpot + Metabase (Hermes).
+        Requiere haber elegido la fecha de envío arriba.
       </p>
     </div>
   );

@@ -49,6 +49,17 @@ Primera skill implementada: búsqueda de segmento (lista de HubSpot) bajo demand
 Ver ADR 0004 para la decisión de autenticación y de por qué el proxy vive en `/api` y no en
 `src/agents/hermes/`.
 
+## Ajuste de integración Metabase (sesión 2026-09-02) — excepción de dominio documentada
+
+Por instrucción explícita del usuario, Hermes también implementa el cruce real de
+conversiones/ventas contra el Data Warehouse (Metabase, tabla `silver.sales`), aunque las reglas
+originales de este documento no mencionan Metabase entre las responsabilidades de Hermes (ese
+dominio pertenece a Iris, ver `.claude/agents/iris.md`). Código: `src/agents/hermes/services/metabaseService.js`
++ `api/metabase/conversions.js`. Contrato: `POST /api/metabase/conversions { emails, businessUnit,
+sendDate }` -> `{ conversions, totalSales }`. Ver ADR 0006 para el detalle completo y por qué se
+trató como una excepción puntual y no como una redefinición permanente del dominio de Iris —
+Iris sigue siendo la única puerta de entrada al envío de SMS vía Workingbits.
+
 ## Pendiente de definir
 - ~~Método de autenticación exacto~~ — Resuelto en ADR 0004: Private App Token (`HS_PAT`), vía
   proxy serverless.

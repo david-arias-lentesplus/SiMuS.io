@@ -31,6 +31,17 @@ Iris controla en exclusiva la comunicación con Workingbits, el proveedor y gate
 - **HADES**: expone mocks/fixtures de respuestas de Workingbits para testear sin llamar a la API real.
 - **Apolo**: documenta el mapeo de eventos Workingbits → modelo interno y la estrategia de extracción antes del vencimiento de 90 días.
 
+## Nota de dominio (sesión 2026-09-02) — Metabase, excepción puntual
+
+El cruce de conversiones/ventas contra Metabase (tabla `silver.sales` del Data Warehouse) —
+originalmente descrito como responsabilidad de Iris en la sección "Rol" de este documento — se
+implementó en Hermes por instrucción explícita del usuario en la sesión de "ajuste de integración
+Metabase". Ver `.claude/agents/hermes.md` (sección "Ajuste de integración Metabase") y ADR 0006.
+Esto NO redefine el dominio de Iris de forma permanente: Iris sigue siendo la única puerta de
+entrada al *envío* de SMS y a los eventos de entrega de Workingbits, que es lo que sigue sin
+implementarse. Si una sesión futura retoma el envío real de SMS o el mecanismo de extracción de
+Workingbits, ese trabajo le corresponde a Iris igual que antes.
+
 ## Pendiente de definir
 - Mecanismo de extracción (webhook push vs. polling con cron) y su frecuencia exacta.
 - Formato y límites exactos de la API de Workingbits (paginación, rate limits).

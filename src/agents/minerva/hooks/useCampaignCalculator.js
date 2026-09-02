@@ -3,16 +3,17 @@ import { useFilteredCampaigns } from './useFilteredCampaigns.js';
 import { COUNTRIES } from '../constants/countries.js';
 import { EVENT_TYPES, detectEventType } from '../utils/detectEventType.js';
 import { fetchSegmentFromHubSpot } from '../utils/fetchSegmentFromHubSpot.js';
-import { simulateConversions } from '../utils/simulateConversions.js';
+import { fetchConversionsFromMetabase } from '../utils/fetchConversionsFromMetabase.js';
 import { computeMetrics } from '../utils/computeMetrics.js';
 
 // Minerva — hook de "organización" de la Calculadora Híbrida (pivote de
 // Fase 1, sesión 2026-09-02; integración real con HubSpot en Fase 2,
-// sesión 2026-09-02). Es la única puerta de entrada que
-// CalculatorPage.jsx (Hefesto) debe usar: mantiene el estado del
-// formulario, orquesta la búsqueda de segmentos (tamaño de muestra REAL
-// vía Hermes/HubSpot + conversiones aún simuladas hasta que Iris integre
-// Metabase/Workingbits) y separa con claridad las dos acciones del flujo:
+// sesión 2026-09-02; cruce real de conversiones contra Metabase en la
+// sesión 2026-09-02 de "ajuste de integración Metabase"). Es la única
+// puerta de entrada que CalculatorPage.jsx (Hefesto) debe usar: mantiene
+// el estado del formulario, orquesta la búsqueda de segmentos (tamaño de
+// muestra REAL vía Hermes/HubSpot + conversiones y ventas REALES vía
+// Hermes/Metabase) y separa con claridad las dos acciones del flujo:
 //
 //   1. calculate()      -> SOLO calcula en memoria (computeMetrics), NUNCA
 //                           toca Supabase.
@@ -80,10 +81,18 @@ export function useCampaignCalculator() {
   }
 
   /**
-   * Busca el segmento: tamaño de muestra REAL vía Hermes (API Route ->
-   * HubSpot, ver .claude/agents/hermes.md, Fase 2) + conversiones
-   * simuladas (cruce con Metabase/Workingbits, pendiente de Iris). Listas
-   * grandes pueden tardar unos segundos en HubSpot (paginación +
+   * Busca el segmento y lo cruza contra ventas reales:
+   *   1. Tamaño de muestra + contactos (con email) REALES vía Hermes/HubSpot.
+   *   2. Conversiones + ventas REALES vía Hermes/Metabase, cruzando esos
+   *      emails contra `silver.sales` en la ventana de 7 días desde
+   *      `form.sendDate`, filtrado por `country.businessUnit` y excluyendo
+   *      cancelaciones (ver src/agents/hermes/services/metabaseService.js,
+   *      sesión 2026-09-02 "ajuste de integración Metabase").
+   * Requiere que el usuario ya haya elegido la fecha de envío y el país
+   * (el segundo siempre tiene un valor por defecto) — sin fecha de envío
+   * no hay ventana de atribución que calcular, así que se valida antes de
+   * llamar a HubSpot para no gastar esa consulta en vano.
+   * Listas grandes pueden tardar unos segundos en HubSpot (paginación +
    * batch/read en lotes de 100) — setSearch({loading:true}) queda activo
    * mientras tanto para que Hefesto muestre el estado de carga.
    */
@@ -97,16 +106,25 @@ export function useCampaignCalculator() {
       setSearch({ loading: false, error: 'Ingresa el nombre del segmento primero.' });
       return;
     }
+    if (!form.sendDate) {
+      setSearch({ loading: false, error: 'Selecciona la fecha de envío antes de buscar el segmento.' });
+      return;
+    }
 
     setSearch({ loading: true, error: null });
     try {
-      const { sampleSize } = await fetchSegmentFromHubSpot(segmentName);
-      const conversions = simulateConversions(segmentName, kind, sampleSize);
+      const { sampleSize, contacts } = await fetchSegmentFromHubSpot(segmentName);
+      const emails = contacts.map((c) => c.email).filter(Boolean);
+      const { conversions, totalSales } = await fetchConversionsFromMetabase({
+        emails,
+        businessUnit: country.businessUnit,
+        sendDate: form.sendDate,
+      });
       setForm((f) => ({
         ...f,
         ...(isSms
-          ? { smsN: String(sampleSize), smsC: String(conversions) }
-          : { ctrlN: String(sampleSize), ctrlC: String(conversions) }),
+          ? { smsN: String(sampleSize), smsC: String(conversions), smsS: String(totalSales) }
+          : { ctrlN: String(sampleSize), ctrlC: String(conversions), ctrlS: String(totalSales) }),
       }));
       setReport(null);
       setApproval(IDLE_APPROVAL);
