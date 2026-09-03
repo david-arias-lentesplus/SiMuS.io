@@ -5,6 +5,18 @@ import { supabase } from '../supabaseClient.js';
 // consultar esta tabla — Minerva/Hefesto siempre pasan por el hook
 // ../hooks/useProcessedCampaigns.js, nunca por este archivo directamente.
 const TABLE = 'sms_processed_campaigns';
+// Fase 2.8 ("CRUCE DE ESTADO: CALCULADO VS NO CALCULADO"): no es una
+// tabla propia de este servicio (esa sigue siendo únicamente
+// `sms_processed_campaigns`) — es solo el nombre de la tabla contra la
+// que se cruza por `campaign_name` para saber cuáles de estas campañas
+// YA fueron calculadas y guardadas. Deméter es el único agente
+// autorizado a hablar con Supabase para TODAS las tablas del proyecto
+// (la separación en servicios por archivo es organizativa, no un límite
+// de dominio entre agentes distintos — ver AGENTS_SYSTEM_HANDOFF.md,
+// sección de Deméter), así que este cruce vive acá y no en
+// smsCampaignsService.js: quien necesita el resultado combinado es
+// exclusivamente /campanas-cargadas (useProcessedCampaigns).
+const CALCULATED_TABLE = 'sms_campaigns';
 
 /**
  * Traduce una campaña agrupada por Éter (parseWorkingbitsCsv) a la fila
@@ -57,7 +69,39 @@ export async function fetchProcessedCampaigns({ countryValue } = {}) {
   if (countryValue) query = query.eq('country_value', countryValue);
   const { data, error } = await query;
   if (error) throw error;
-  return data;
+  return attachCalculatedState(data);
+}
+
+/**
+ * Fase 2.8 ("CRUCE DE ESTADO: CALCULADO VS NO CALCULADO"): cruza las
+ * campañas procesadas por `campaign_name` contra `sms_campaigns` (la
+ * tabla de campañas YA calculadas/guardadas) e inyecta `isCalculated` y
+ * `calculatedCampaignId` en cada fila — Hefesto usa `isCalculated` para
+ * el badge "Calculado" y `calculatedCampaignId` para enrutar el botón
+ * "Ver Cálculo" a `/reporte/:id` (ver ProcessedCampaignsPage.jsx).
+ * `campaign_name` es el mismo identificador de negocio que ya usa el
+ * upsert de esta tabla (ver `upsertProcessedCampaigns`, `onConflict:
+ * 'campaign_name'`) y el que guarda `toCampaignRow()` al calcular
+ * (`campaign_name: m.name`, y `m.name` viene de
+ * `selectedProcessedCampaign.campaign_name` en la Calculadora) — mismo
+ * string en ambas tablas, no hace falta normalizar.
+ */
+async function attachCalculatedState(rows) {
+  if (!rows || rows.length === 0) return rows ?? [];
+  const names = rows.map((r) => r.campaign_name).filter(Boolean);
+  if (names.length === 0) return rows.map((r) => ({ ...r, isCalculated: false, calculatedCampaignId: null }));
+
+  const { data: calculated, error } = await supabase
+    .from(CALCULATED_TABLE)
+    .select('id, campaign_name')
+    .in('campaign_name', names);
+  if (error) throw error;
+
+  const idByName = new Map(calculated.map((c) => [c.campaign_name, c.id]));
+  return rows.map((r) => {
+    const calculatedCampaignId = idByName.get(r.campaign_name) ?? null;
+    return { ...r, isCalculated: calculatedCampaignId != null, calculatedCampaignId };
+  });
 }
 
 /**

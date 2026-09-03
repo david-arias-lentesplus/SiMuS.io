@@ -120,3 +120,22 @@ export async function deleteAllCampaigns() {
     .neq('id', '00000000-0000-0000-0000-000000000000');
   if (error) throw error;
 }
+
+/**
+ * Fase 2.8 ("TIPOS DE EVENTO DINÁMICOS"): valores DISTINCT de
+ * `event_type` ya guardados en `sms_campaigns`, para poblar el <select>
+ * de "Tipo de evento" del Dashboard y de la Calculadora sin tener que
+ * mantenerlos a mano en un catálogo estático (ver EVENT_TYPES en
+ * detectEventType.js, que sigue existiendo como semilla/fallback — ver
+ * mergeEventTypes() ahí mismo). Supabase-js no tiene un `.distinct()` de
+ * primera clase para columnas sueltas; para una sola columna de baja
+ * cardinalidad como esta, traer todos los valores y deduplicar en JS es
+ * más simple que una vista o función RPC dedicada, y el volumen de
+ * `sms_campaigns` no lo justifica todavía.
+ */
+export async function fetchDistinctEventTypes() {
+  const { data, error } = await supabase.from(TABLE).select('event_type').not('event_type', 'is', null);
+  if (error) throw error;
+  const unique = new Set(data.map((r) => r.event_type).filter(Boolean));
+  return Array.from(unique).sort((a, b) => a.localeCompare(b));
+}

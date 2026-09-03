@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useFilteredCampaigns } from './useFilteredCampaigns.js';
 import { useCountriesConfig } from '../../demeter/hooks/useCountriesConfig.js';
 import { useProcessedCampaigns } from '../../demeter/hooks/useProcessedCampaigns.js';
+import { useEventTypes } from '../../demeter/hooks/useEventTypes.js';
 import { useCampaignStore } from '../store/useCampaignStore.js';
 import { COUNTRIES as STATIC_COUNTRIES_FALLBACK } from '../constants/countries.js';
-import { EVENT_TYPES, detectEventType } from '../utils/detectEventType.js';
+import { EVENT_TYPES, detectEventType, mergeEventTypes } from '../utils/detectEventType.js';
 import { fetchSegmentFromHubSpot } from '../utils/fetchSegmentFromHubSpot.js';
 import { fetchConversionsFromMetabase } from '../utils/fetchConversionsFromMetabase.js';
 import { fetchConversionsForSmsGroup } from '../utils/fetchConversionsForSmsGroup.js';
@@ -78,6 +79,7 @@ const EMPTY_FORM = {
   eventType: EVENT_TYPES[0],
   message: '',
   smsSegmentName: '', // Fase 2.2: vuelve — nombre de lista de HubSpot para el Grupo SMS
+  eventTypeCustom: '', // Fase 2.8: texto libre cuando eventType === 'Otro' (ver EVENT_TYPE_OTHER abajo)
   smsN: '',   // ReadOnly: viene de muestra_entregados de la campaña elegida (nunca de HubSpot)
   smsC: '',
   smsS: '',
@@ -90,6 +92,18 @@ const EMPTY_FORM = {
 const IDLE_SEARCH = { loading: false, error: null };
 const IDLE_APPROVAL = { status: 'idle', error: null };
 
+// Fase 2.8 ("TIPOS DE EVENTO DINÁMICOS"): sentinel del <select> de "Tipo
+// de evento" que le dice a CampaignForm.jsx que muestre el
+// <input type="text"> de texto libre debajo — NUNCA se guarda tal cual
+// en Supabase (ver resolveEventType() abajo).
+export const EVENT_TYPE_OTHER = 'Otro';
+
+/** Devuelve el tipo de evento real a usar en computeMetrics()/guardado. */
+function resolveEventType(form) {
+  if (form.eventType !== EVENT_TYPE_OTHER) return form.eventType;
+  return form.eventTypeCustom.trim() || EVENT_TYPE_OTHER;
+}
+
 export function useCampaignCalculator() {
   const { save } = useFilteredCampaigns();
   // Fase 3 (ADR 0007): fuente de verdad ahora es la tabla countries_config
@@ -97,6 +111,12 @@ export function useCampaignCalculator() {
   // como red de seguridad, para no dejar la Calculadora inutilizable.
   const { countries: countriesConfig, loading: countriesLoading, error: countriesError } =
     useCountriesConfig({ onlyActive: true });
+  // Fase 2.8: catálogo dinámico de "Tipo de evento" — combina EVENT_TYPES
+  // (semilla/fallback) con los valores DISTINCT ya guardados en
+  // sms_campaigns, más el sentinel "Otro" al final (nunca dentro de
+  // mergeEventTypes(), ver ese comentario en detectEventType.js).
+  const { eventTypes: dbEventTypes } = useEventTypes();
+  const eventTypes = useMemo(() => [...mergeEventTypes(dbEventTypes), EVENT_TYPE_OTHER], [dbEventTypes]);
 
   const countries = useMemo(() => {
     if (countriesConfig.length > 0) {
@@ -380,7 +400,7 @@ export function useCampaignCalculator() {
       smsCost: country.costPerSms,
       sendDate: form.sendDate,
       smsMessage: form.message,
-      eventType: form.eventType,
+      eventType: resolveEventType(form),
       smsN: Number(form.smsN) || 0,
       smsC: Number(form.smsC) || 0,
       smsS: Number(form.smsS) || 0,
@@ -423,7 +443,7 @@ export function useCampaignCalculator() {
     countries,
     countriesLoading,
     countriesError,
-    eventTypes: EVENT_TYPES,
+    eventTypes,
     processedCampaigns: availableProcessedCampaigns,
     processedCampaignsLoading,
     selectedProcessedCampaign,

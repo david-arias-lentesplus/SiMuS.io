@@ -39,6 +39,16 @@ import { fmtN, fmtDateShort } from '../utils/format.js';
 // "Eliminar": usa `deleteCampaign(id)` del hook de Deméter (alias de
 // `remove`, agregado en esta misma fase) tras una confirmación, igual
 // que HistoryPage.
+//
+// Fase 2.8 (2026-09-03, "ESTADOS DE CÁLCULO"): cada fila ya trae
+// `isCalculated`/`calculatedCampaignId` inyectados por Deméter (ver
+// processedCampaignsService.fetchProcessedCampaigns -> attachCalculatedState)
+// cruzando por `campaign_name` contra `sms_campaigns`. Si `isCalculated`
+// es true se muestra un badge verde "Calculado" junto al nombre y el
+// botón "Calcular ROI" se REEMPLAZA por "Ver Cálculo" (navega a
+// `/reporte/${calculatedCampaignId}`, la misma vista de detalle
+// read-only de Fase 2.6) — evita que alguien vuelva a calcular y
+// aprobar el ROI de una campaña que ya está guardada en el histórico.
 export default function ProcessedCampaignsPage() {
   const { campaigns, loading, error, deleteCampaign } = useProcessedCampaigns();
   const { countries: countriesConfig } = useCountriesConfig();
@@ -133,7 +143,14 @@ export default function ProcessedCampaignsPage() {
                     <td className="py-2 pr-3 text-ink-500">
                       {fmtDateShort(parseCsvDate(c.communication_start_date || c.send_date))}
                     </td>
-                    <td className="py-2 pr-3 font-medium text-ink-900">{c.campaign_name}</td>
+                    <td className="py-2 pr-3">
+                      <span className="font-medium text-ink-900">{c.campaign_name}</span>
+                      {c.isCalculated ? (
+                        <span className="ml-2 rounded-full bg-state-success/10 px-2 py-0.5 text-xs font-medium text-state-success">
+                          Calculado
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="py-2 pr-3">
                       <span className="rounded-full bg-blue-deep/10 px-2 py-0.5 text-xs text-blue-deep">
                         {countryLabel(c.country_value)}
@@ -142,13 +159,23 @@ export default function ProcessedCampaignsPage() {
                     <td className="py-2 pr-3 tabular-nums">{fmtN(c.muestra_entregados)}</td>
                     <td className="py-2 text-right">
                       <div className="flex justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleCalculateRoi(c)}
-                          className="rounded-lg border border-brand-teal/40 px-2 py-1 text-xs font-medium text-brand-teal hover:bg-brand-teal/10"
-                        >
-                          Calcular ROI
-                        </button>
+                        {c.isCalculated ? (
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/reporte/${c.calculatedCampaignId}`)}
+                            className="rounded-lg border border-brand-teal/40 px-2 py-1 text-xs font-medium text-brand-teal hover:bg-brand-teal/10"
+                          >
+                            Ver Cálculo
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleCalculateRoi(c)}
+                            className="rounded-lg border border-brand-teal/40 px-2 py-1 text-xs font-medium text-brand-teal hover:bg-brand-teal/10"
+                          >
+                            Calcular ROI
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleDelete(c)}

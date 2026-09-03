@@ -80,6 +80,18 @@ export function getMonthlyData(campaigns) {
 }
 
 /**
+ * Fase 2.8 ("REFINAMIENTO DE DASHBOARD..."): adjunta `incremental_gain`
+ * (recalculado con computeMetrics(), mismo criterio que el resto de este
+ * archivo) a cada fila cruda de `sms_campaigns`, sin mutar el original —
+ * lo usa el Ranking de campañas del Dashboard, que ahora ordena por
+ * ganancia incremental descendente en vez de por ROI (pedido explícito
+ * de esta fase: "no por ROI").
+ */
+export function withIncrementalGain(campaigns) {
+  return campaigns.map((row) => ({ ...row, incremental_gain: toMetrics(row).incrementalGain }));
+}
+
+/**
  * Agrupa por país sumando la ganancia incremental de cada campaña, y
  * devuelve la lista YA ordenada de mayor a menor (GeoChart.jsx solo
  * pinta, no ordena).

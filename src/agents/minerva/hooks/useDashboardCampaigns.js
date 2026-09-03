@@ -1,7 +1,9 @@
 import { useMemo } from 'react';
 import { useSmsCampaigns } from '../../demeter/hooks/useSmsCampaigns.js';
+import { useEventTypes } from '../../demeter/hooks/useEventTypes.js';
 import { useCampaignStore } from '../store/useCampaignStore.js';
-import { getMonthlyData, getCountryData } from '../utils/aggregateCampaigns.js';
+import { getMonthlyData, getCountryData, withIncrementalGain } from '../utils/aggregateCampaigns.js';
+import { mergeEventTypes } from '../utils/detectEventType.js';
 
 // Minerva — hook de "organización" único del Dashboard Global (Fase 2.7,
 // "COMPLETITUD DE DASHBOARD, GRÁFICAS Y FILTROS REACTIVOS"). Reemplaza a
@@ -18,14 +20,23 @@ import { getMonthlyData, getCountryData } from '../utils/aggregateCampaigns.js';
 // real ocurre en la base de datos, no en memoria, para que "Ranking de
 // campañas" no dependa de haber traído de más.
 //
-// `ranking`: TODAS las campañas ya filtradas, ordenadas de mayor a menor
-// por `roi_real` — a propósito SIN `.slice()`/límite, la instrucción de
-// Fase 2.7 pidió explícitamente que el ranking muestre el total de
-// campañas filtradas, no un top fijo (la Fase 2.6 anterior sí limitaba a
-// 5, eso queda revertido acá).
+// Fase 2.8 (2026-09-03, "REFINAMIENTO DE DASHBOARD, TIPOS DE EVENTO
+// DINÁMICOS Y ESTADOS DE CÁLCULO"): `ranking` ahora ordena por
+// `incremental_gain` DESCENDENTE (no por `roi_real` como en Fase 2.6/2.7
+// — pedido explícito: "el ORDER BY sea explícitamente por la ganancia
+// incremental... no por ROI"), usando `withIncrementalGain()` para
+// adjuntar ese valor recalculado a cada fila (ver aggregateCampaigns.js
+// — `sms_campaigns` no guarda `incremental_gain` como columna). Sigue
+// SIN límite/`.slice()` — el ranking completo de campañas filtradas.
+// También expone `eventTypes` (catálogo dinámico para el filtro "Tipo de
+// evento" de la barra de DashboardFilters — combina EVENT_TYPES estático
+// con los DISTINCT de sms_campaigns vía useEventTypes/mergeEventTypes,
+// sin el sentinel "Otro" que solo tiene sentido en el formulario de la
+// Calculadora).
 export function useDashboardCampaigns() {
   const dashboardFilters = useCampaignStore((s) => s.dashboardFilters);
   const { campaigns, loading, error, reload } = useSmsCampaigns(dashboardFilters);
+  const { eventTypes: dbEventTypes } = useEventTypes();
 
   const stats = useMemo(() => {
     const n = campaigns.length;
@@ -37,13 +48,14 @@ export function useDashboardCampaigns() {
     return { total: n, roiAvg, roiBest, countries };
   }, [campaigns]);
 
-  const ranking = useMemo(
-    () => [...campaigns].sort((a, b) => (b.roi_real ?? 0) - (a.roi_real ?? 0)),
-    [campaigns]
-  );
+  const ranking = useMemo(() => {
+    const enriched = withIncrementalGain(campaigns);
+    return enriched.sort((a, b) => (b.incremental_gain ?? 0) - (a.incremental_gain ?? 0));
+  }, [campaigns]);
 
   const monthly = useMemo(() => getMonthlyData(campaigns), [campaigns]);
   const byCountry = useMemo(() => getCountryData(campaigns), [campaigns]);
+  const eventTypes = useMemo(() => mergeEventTypes(dbEventTypes), [dbEventTypes]);
 
-  return { campaigns, stats, ranking, monthly, byCountry, loading, error, reload };
+  return { campaigns, stats, ranking, monthly, byCountry, eventTypes, loading, error, reload };
 }

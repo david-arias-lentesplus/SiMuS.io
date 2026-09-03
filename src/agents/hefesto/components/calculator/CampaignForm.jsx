@@ -1,5 +1,6 @@
 import SegmentLookupField from './SegmentLookupField.jsx';
 import { round2 } from '../../utils/format.js';
+import { EVENT_TYPE_OTHER } from '../../../minerva/hooks/useCampaignCalculator.js';
 
 // Hefesto — formulario de "Nueva Campaña" de la Calculadora.
 //
@@ -127,6 +128,21 @@ export default function CampaignForm({ calc }) {
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
+          {/* Fase 2.8 ("TIPOS DE EVENTO DINÁMICOS"): si el usuario elige el
+              sentinel "Otro" (siempre al final de `eventTypes`, ver
+              useCampaignCalculator.js), aparece este campo de texto libre
+              justo debajo — resolveEventType() en ese mismo hook usa este
+              valor (recortado) como el `event_type` real al calcular/
+              guardar, nunca el literal "Otro". */}
+          {form.eventType === EVENT_TYPE_OTHER ? (
+            <input
+              type="text"
+              value={form.eventTypeCustom}
+              onChange={(e) => setField('eventTypeCustom', e.target.value)}
+              placeholder="Escribe el nuevo tipo de evento..."
+              className="mt-2 w-full rounded-lg border border-ink-300/60 bg-surface px-3 py-2 text-sm text-ink-900 placeholder:text-ink-400 focus:border-brand-teal focus:outline-none"
+            />
+          ) : null}
         </Field>
       </div>
 

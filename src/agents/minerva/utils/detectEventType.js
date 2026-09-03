@@ -5,6 +5,22 @@
 // — regla explícita del usuario, no se debe pisar una elección manual.
 export const EVENT_TYPES = ['Comercial', 'Transaccional', 'Recordatorio', 'Retención', 'Bienvenida'];
 
+/**
+ * Fase 2.8 ("TIPOS DE EVENTO DINÁMICOS"): combina el catálogo estático de
+ * arriba (semilla/fallback, para no dejar el <select> vacío mientras
+ * `sms_campaigns` no tiene filas) con los valores DISTINCT ya guardados
+ * en Supabase (ver useEventTypes.js, Deméter) — incluye automáticamente
+ * cualquier tipo "Otro" que un usuario haya escrito a mano en la
+ * Calculadora (ver CampaignForm.jsx), sin tener que mantenerlo acá.
+ * NO incluye el sentinel "Otro" en sí — eso lo agrega CampaignForm.jsx
+ * solo en su propio <select>, nunca en el filtro del Dashboard (filtrar
+ * "Otro" no tendría sentido: los valores reales ya aparecen por su
+ * nombre propio gracias al DISTINCT).
+ */
+export function mergeEventTypes(dbEventTypes = []) {
+  return Array.from(new Set([...EVENT_TYPES, ...dbEventTypes])).sort((a, b) => a.localeCompare(b));
+}
+
 const KEYWORD_MAP = [
   {
     type: 'Transaccional',
