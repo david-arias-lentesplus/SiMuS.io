@@ -6,12 +6,19 @@ import { supabase } from '../supabaseClient.js';
 // ../hooks/useProcessedCampaigns.js, nunca por este archivo directamente.
 const TABLE = 'sms_processed_campaigns';
 
-/** Traduce una campaña agrupada por Éter (parseWorkingbitsCsv) a la fila de la tabla. */
+/**
+ * Traduce una campaña agrupada por Éter (parseWorkingbitsCsv) a la fila
+ * de la tabla.
+ *
+ * Fase 2.3: se agrega `communication_start_date` (migración 005) —
+ * distinto de `send_date`, ver esa migración y parseWorkingbitsCsv.js.
+ */
 export function toProcessedCampaignRow(group, countryValue) {
   return {
     campaign_name: group.campaignName,
     country_value: countryValue,
     send_date: group.fecha || null,
+    communication_start_date: group.fechaComunicacion || null,
     message: group.mensaje || null,
     muestra_entregados: group.muestraEntregados,
     telefonos_validos: group.telefonosValidos,

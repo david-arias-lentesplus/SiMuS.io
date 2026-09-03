@@ -25,6 +25,20 @@ import { round2 } from '../../hefesto/utils/format.js';
 // mensaje, tipo de evento y el tamaño de muestra REAL del Grupo SMS
 // (`muestra_entregados`, ahora un campo ReadOnly — ver CampaignForm.jsx).
 //
+// REFINAMIENTO FASE 2.3 ("AUTOMATIZACIÓN DE CSV"): el orden de selección
+// se INVIERTE. Antes el usuario elegía el País primero (filtrando qué
+// campañas procesadas se ofrecían) y luego la campaña. Desde que /upload
+// detecta el país automáticamente del CSV (ver
+// eter/utils/detectCountryFromCsv.js) y lo guarda por campaña, ya no
+// tiene sentido pedirle al usuario que lo elija de nuevo: ahora se listan
+// TODAS las campañas procesadas (sin filtrar por país) y, al elegir una,
+// el País se resuelve automáticamente a partir de su `country_value`
+// guardado (ver `resolveCountryForProcessedCampaign`) y queda en modo
+// ReadOnly en el formulario — igual que "Fecha de envío", que ahora se
+// autocompleta desde `communication_start_date` (Éter, migración 005) en
+// vez de `send_date`, también ReadOnly, para garantizar que la fecha que
+// ve el usuario es EXACTAMENTE la que se usa en la consulta a Metabase.
+//
 // Corrección de Fase 2.2 (ver ADR 0009): el pivote de Fase 2.1 había
 // quitado por completo la búsqueda de HubSpot del Grupo SMS. El usuario
 // corrigió eso — el CSV de Workingbits solo trae teléfonos, pero
@@ -95,11 +109,9 @@ export function useCampaignCalculator() {
   const [approval, setApproval] = useState(IDLE_APPROVAL); // idle|saving|saved|error
 
   // Fase 2.1: campañas agrupadas por Éter desde el CSV de Workingbits.
-  // Se listan todas y se filtran más abajo por país una vez que `country`
-  // está resuelto (ver availableProcessedCampaigns) — NOTA:
-  // `sms_processed_campaigns.country_value` guarda el `value` del
-  // catálogo ESTÁTICO histórico (ej. 'colombia'), no necesariamente el
-  // uuid de countries_config, así que el filtro compara contra ambos.
+  // REFINAMIENTO FASE 2.3: se listan TODAS sin filtrar por país (ver
+  // `availableProcessedCampaigns` más abajo) — el país ya no se elige
+  // antes de la campaña, se resuelve DESPUÉS a partir de ella.
   const { campaigns: processedCampaigns, loading: processedCampaignsLoading } = useProcessedCampaigns();
 
   const country = useMemo(
@@ -107,16 +119,40 @@ export function useCampaignCalculator() {
     [countries, form.countryValue]
   );
 
-  const availableProcessedCampaigns = useMemo(() => {
-    if (!country?.businessUnit) return [];
-    const staticValue = STATIC_COUNTRIES_FALLBACK.find((c) => c.businessUnit === country.businessUnit)?.value;
-    return processedCampaigns.filter((pc) => pc.country_value === staticValue || pc.country_value === form.countryValue);
-  }, [processedCampaigns, country, form.countryValue]);
+  // REFINAMIENTO FASE 2.3: ya NO se filtra por país antes de elegir la
+  // campaña (ver nota grande arriba) — se listan TODAS las campañas
+  // procesadas, el país se resuelve DESPUÉS a partir de la campaña
+  // elegida. Se mantiene el nombre `availableProcessedCampaigns` para no
+  // tocar el resto de los consumidores (CampaignForm.jsx).
+  const availableProcessedCampaigns = processedCampaigns;
 
   const selectedProcessedCampaign = useMemo(
     () => availableProcessedCampaigns.find((pc) => pc.id === form.processedCampaignId) ?? null,
     [availableProcessedCampaigns, form.processedCampaignId]
   );
+
+  /**
+   * Resuelve la entrada de `countries` (countries_config o el catálogo
+   * estático de respaldo) que corresponde al `country_value` que Éter
+   * detectó y guardó para esta campaña procesada — ver
+   * detectCountryFromCsv.js y migración 003 (`country_value` guarda el
+   * `value` del catálogo ESTÁTICO histórico, ej. 'colombia', no
+   * necesariamente el uuid de countries_config). Se resuelve puenteando
+   * por `businessUnit`, igual que ya hacía el filtro anterior.
+   */
+  function resolveCountryForProcessedCampaign(campaign) {
+    if (!campaign) return null;
+    const staticMatch = STATIC_COUNTRIES_FALLBACK.find((c) => c.value === campaign.country_value);
+    const businessUnit = staticMatch?.businessUnit;
+    if (businessUnit) {
+      const match = countries.find((c) => c.businessUnit === businessUnit);
+      if (match) return match;
+    }
+    // Red de seguridad: si por algún motivo country_value ya coincide
+    // directamente con un `value` de `countries` (ej. countries_config
+    // reusara el mismo string), igual se resuelve.
+    return countries.find((c) => c.value === campaign.country_value) ?? null;
+  }
 
   // Regla reactiva: mientras el usuario no haya tocado el <select> de tipo
   // de evento a mano, se auto-completa leyendo el nombre de campaña.
@@ -154,6 +190,17 @@ export function useCampaignCalculator() {
    * mensaje, tipo de evento y el tamaño de muestra REAL (Entregados) del
    * Grupo SMS. Limpia cualquier búsqueda/reporte anterior porque cambia
    * la campaña de base.
+   *
+   * REFINAMIENTO FASE 2.3: además de fecha/mensaje/muestra, ahora también
+   * autocompleta y BLOQUEA (ver CampaignForm.jsx) dos campos:
+   *   - `countryValue`: resuelto de `country_value` (detectado por Éter
+   *     al subir el CSV) vía `resolveCountryForProcessedCampaign` — ya no
+   *     lo elige el usuario a mano.
+   *   - `sendDate`: ahora se toma de `communication_start_date`
+   *     (migración 005), con `send_date` como fallback SOLO para
+   *     campañas cargadas antes de esa migración (que no tienen el campo
+   *     nuevo) — nunca se deja la fecha vacía si alguna de las dos
+   *     columnas tiene un valor utilizable.
    */
   function selectProcessedCampaign(processedCampaignId) {
     const campaign = availableProcessedCampaigns.find((pc) => pc.id === processedCampaignId);
@@ -161,12 +208,14 @@ export function useCampaignCalculator() {
       setField('processedCampaignId', '');
       return;
     }
+    const matchedCountry = resolveCountryForProcessedCampaign(campaign);
     setEventTypeTouched(false); // vuelve a auto-detectar para la campaña recién elegida
     setForm((f) => ({
       ...f,
       processedCampaignId: campaign.id,
       name: campaign.campaign_name,
-      sendDate: parseCsvDate(campaign.send_date),
+      sendDate: parseCsvDate(campaign.communication_start_date || campaign.send_date),
+      countryValue: matchedCountry ? matchedCountry.value : f.countryValue,
       message: campaign.message || '',
       eventType: detectEventType(campaign.campaign_name),
       smsN: String(campaign.muestra_entregados ?? 0),

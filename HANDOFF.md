@@ -788,3 +788,40 @@ SMS. Ver ADR 0011 para el detalle completo.
 No se pudo probar en producción desde este entorno — el camino de código es idéntico al que ya usa
 el Grupo Control desde ADR 0006 (sin SQL nuevo), así que no requiere nueva validación de query.
 Pendiente que el usuario confirme que los tiempos de carga vuelven a ser normales.
+
+### Sesión 2026-09-03, madrugada (5) — ADR 0012: REFINAMIENTO FASE 2.3 (querys + automatización de CSV)
+
+Instrucción formal del usuario ("REFINAMIENTO FASE 2.3 — OPTIMIZACIÓN DE QUERYS Y AUTOMATIZACIÓN DE
+CSV"), con tres frentes:
+
+1. **Hermes**: `buildEmailSalesQuery` (usada por ambos grupos desde ADR 0011) se reestructuró como
+   CTE explícita (filtrar fecha+business_unit+status en `sales_window`, recién después `email in
+   (...)`). Se verificó con `EXPLAIN ANALYZE` contra datos reales que Postgres ya hacía esto solo
+   gracias al índice `sales_created_at_index` (confirmado vía `pg_indexes`) — el refactor no cambia
+   el plan de ejecución, pero deja la intención explícita en el SQL. Se evaluó bajar `ILIKE
+   '%cancel%'` a un `NOT IN` exacto (pedido por el usuario) pero se descartó: hay docenas de
+   variantes reales de "cancelado" en `silver.sales.status` (confirmado con
+   `select distinct status, count(*)...`), y un `NOT IN` desactualizado contaría ventas canceladas
+   como conversiones — un error de negocio peor que el rendimiento (que además `EXPLAIN ANALYZE`
+   confirmó que no es el cuello de botella). Se evaluó subir `BATCH_SIZE` de 800 a 2000 (pedido) pero
+   se mantuvo en 800 por el límite real de payload del MCP (~92.6-106.1KB, ya documentado) — 2000
+   emails reales podrían reintroducir el 413. Todo documentado en el código y en ADR 0012.
+
+2. **Éter/Deméter**: nuevo `src/agents/eter/utils/detectCountryFromCsv.js` — lee `Country Name` de
+   la primera fila del CSV; para Brasil, inspecciona el prefijo de `Communication Name` (`NL_` →
+   brasil-nl/BR, `LV_` → brasil-lv/LV); si es ambiguo o desconocido, `CsvUploadForm.jsx` muestra un
+   modal de confirmación manual. El `<select>` de país en `/upload` se ELIMINÓ. `parseWorkingbitsCsv.js`
+   ahora también extrae `Communication Start Date` (`fechaComunicacion`, distinta de `Send At`).
+   Migración `005_processed_campaigns_communication_start_date.sql` agrega esa columna;
+   `processedCampaignsService.js` actualizado.
+
+3. **Hefesto/Minerva**: `useCampaignCalculator.selectProcessedCampaign` ahora autocompleta
+   `sendDate` desde `communication_start_date` (fallback a `send_date` para campañas viejas) y
+   `countryValue` resolviendo el país detectado por Éter — el flujo se invirtió: ya no se elige país
+   antes de campaña, se listan todas las campañas y el país se resuelve después. `CampaignForm.jsx`:
+   "Fecha de envío" y "País" pasan a ReadOnly (mismo patrón que "Tamaño de muestra real").
+
+**No se pudo probar end-to-end en este entorno** (sin `npm run dev`/`vite build`, sin un CSV real de
+Workingbits para confirmar los nombres exactos de `Country Name`/`Communication Start Date`).
+Pendiente: aplicar migración 005 (después de 003 y 004), subir un CSV real y confirmar detección de
+país/fecha, y reconfirmar que el Grupo SMS ya no da timeouts. Detalle completo en ADR 0012.

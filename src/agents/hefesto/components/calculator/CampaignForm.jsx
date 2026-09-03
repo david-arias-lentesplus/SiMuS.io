@@ -16,13 +16,22 @@ import { round2 } from '../../utils/format.js';
 // también necesita los emails de esa lista de HubSpot (ver
 // useCampaignCalculator.searchSmsGroup). El Grupo Control sigue usando el
 // mismo componente, sin cambios.
+//
+// REFINAMIENTO FASE 2.3 ("AUTOMATIZACIÓN DE CSV"): "País" y "Fecha de
+// envío" pasan a ser ReadOnly, igual que "Tamaño de muestra real" — ya no
+// se eligen/editan a mano. Ambos se autocompletan al elegir una campaña
+// (ver useCampaignCalculator.selectProcessedCampaign): el país viene de
+// la detección automática que Éter hizo en /upload
+// (detectCountryFromCsv.js) y la fecha viene de `Communication Start
+// Date` del CSV. Bloquearlos garantiza que lo que se ve en el formulario
+// es EXACTAMENTE lo que se usa para consultar Metabase — el usuario ya
+// no puede desalinear esos dos valores sin querer.
 export default function CampaignForm({ calc }) {
   const {
     form,
     setField,
     setEventType,
     country,
-    countries,
     countriesLoading,
     eventTypes,
     processedCampaigns,
@@ -53,7 +62,7 @@ export default function CampaignForm({ calc }) {
             processedCampaignsLoading
               ? 'Cargando campañas del CSV...'
               : processedCampaigns.length === 0
-              ? 'No hay campañas cargadas para este país todavía — sube un CSV en /upload.'
+              ? 'No hay campañas cargadas todavía — sube un CSV en /upload.'
               : undefined
           }
         >
@@ -74,34 +83,30 @@ export default function CampaignForm({ calc }) {
           </select>
         </Field>
 
-        <Field label="Fecha de envío" hint="Se autocompleta desde el CSV; ajústala si hace falta.">
+        <Field label="Fecha de envío" hint={'Se toma de "Communication Start Date" del CSV — no editable, para mantener consistencia con la consulta a Metabase.'}>
           <input
             type="date"
             value={form.sendDate}
-            onChange={(e) => setField('sendDate', e.target.value)}
-            className="w-full rounded-lg border border-ink-300/60 bg-surface px-3 py-2 text-sm text-ink-900 focus:border-brand-teal focus:outline-none"
+            readOnly
+            disabled
+            className="w-full cursor-not-allowed rounded-lg border border-ink-300/60 bg-ink-100/60 px-3 py-2 text-sm text-ink-700"
           />
         </Field>
 
-        <Field label="País">
-          <select
-            value={form.countryValue}
-            onChange={(e) => setField('countryValue', e.target.value)}
-            disabled={countriesLoading || countries.length === 0}
-            className="w-full rounded-lg border border-ink-300/60 bg-surface px-3 py-2 text-sm text-ink-900 focus:border-brand-teal focus:outline-none disabled:opacity-50"
-          >
-            {countriesLoading ? (
-              <option value="">Cargando países...</option>
-            ) : countries.length === 0 ? (
-              <option value="">Sin países configurados</option>
-            ) : (
-              countries.map((c) => (
-                <option key={c.value} value={c.value}>
-                  {c.label} - ${c.costPerSms.toFixed(3)} / SMS
-                </option>
-              ))
-            )}
-          </select>
+        <Field label="País" hint="Detectado automáticamente desde el CSV al elegir la campaña.">
+          <input
+            type="text"
+            value={
+              countriesLoading
+                ? 'Cargando países...'
+                : form.processedCampaignId
+                ? `${country.label} - $${country.costPerSms.toFixed(3)} / SMS`
+                : 'Elige una campaña arriba'
+            }
+            readOnly
+            disabled
+            className="w-full cursor-not-allowed rounded-lg border border-ink-300/60 bg-ink-100/60 px-3 py-2 text-sm text-ink-700"
+          />
         </Field>
 
         <Field label="Tipo de evento" hint="Se auto-completa leyendo el nombre de la campaña; puedes cambiarlo a mano.">

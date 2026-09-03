@@ -163,6 +163,17 @@ const REVENUE_COLUMN = 'gmv_usd';
 // "FIX 413 PAYLOAD TOO LARGE" arriba. Usado por buildEmailSalesQuery
 // (consulta agregada, 1 fila), para ambos flujos (Grupo Control y Grupo
 // SMS, ver "SIMPLIFICACIÓN FINAL" — ambos llaman a la misma función).
+//
+// REFINAMIENTO FASE 2.3: la instrucción de negocio pedía trocear en lotes
+// de hasta 2000. Se mantiene en 800 a propósito, NO 2000: es el valor
+// empíricamente seguro contra el límite REAL de payload del servidor MCP
+// (~92.6KB-106.1KB, medido en la sesión de "FIX 413 PAYLOAD TOO LARGE").
+// 2000 emails reales (largos, con dominios corporativos) pueden superar
+// ese límite y reintroducir el 413 que ya se había resuelto. El
+// comportamiento pedido — trocear arrays grandes en lotes y sumar los
+// resultados en Node — ya está implementado abajo (`chunkArray` +
+// `Promise.all` en `fetchConversionsFromWarehouse`) para cualquier
+// tamaño de array, solo que el tamaño de lote real es 800, no 2000.
 const BATCH_SIZE = 800;
 
 // Límite REAL de `row_limit` del servidor MCP de Metabase en producción,
@@ -240,6 +251,23 @@ function addDaysISO(dateStr, days) {
  * (por defecto `s`, el usado en ambos builders) y todas las columnas se
  * califican con él — nunca dejar una columna de `silver.sales` sin
  * prefijo en una consulta que además involucre otra tabla.
+ *
+ * REFINAMIENTO FASE 2.3 — por qué se mantiene `status not ilike
+ * '%cancel%'` en vez de un `status not in ('canceled', 'CANCELADO')`
+ * exacto (como pedía la instrucción, "si es posible"): se verificó
+ * contra los datos reales de `silver.sales`
+ * (`select distinct status, count(*) ... group by status`) y hay
+ * DOCENAS de variantes de cancelación distintas según el país/plataforma
+ * de origen — 'canceled', 'CANCELADO', 'Cancelado', 'Pedido Cancelado-
+ * Pedido CANCELADO', 'Pedido Cancelado-Cartão Negado', 'Pedido Cancelado-
+ * Boleto Expirado', 'Pedido Cancelado-Fraude', etc. Una lista exacta
+ * quedaría desactualizada apenas aparezca una variante nueva, y el precio
+ * de ese error es CONTAR una venta cancelada como conversión real — mucho
+ * peor que un filtro un poco más lento. Además, `EXPLAIN ANALYZE` contra
+ * datos reales confirmó que el `ilike` NO es el cuello de botella: se
+ * aplica sobre las pocas miles de filas que ya sobrevivieron el filtro de
+ * `created_at` (que sí usa índice, `sales_created_at_index`), no contra
+ * toda la tabla — el costo real de esta condición es despreciable.
  */
 function sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral, alias = 's' }) {
   const p = alias ? `${alias}.` : '';
@@ -260,19 +288,38 @@ function attributionWindow(sendDate) {
   };
 }
 
-/** Grupo Control: cruce directo por email contra silver.sales (sin cambios desde ADR 0006). */
+/**
+ * Cruce por email contra silver.sales — usado por AMBOS grupos (Control
+ * desde ADR 0006, SMS desde ADR 0011).
+ *
+ * REFINAMIENTO FASE 2.3 ("optimización de querys"): reestructurada como
+ * CTE para aplicar el filtro de fecha + business_unit + no-cancelado
+ * ANTES del `IN (...)` de emails ("regla de oro" pedida explícitamente:
+ * reducir primero el universo de ventas, recién después cruzar contra la
+ * lista de strings). Verificado con `EXPLAIN ANALYZE` contra datos reales
+ * (`mcp__livo_metabase__execute`) que Postgres YA aplicaba este orden por
+ * sí solo gracias al índice `sales_created_at_index` (bitmap index scan
+ * sobre `created_at`, filtro de `business_unit`/`status`/`email` recién
+ * después, sobre unas pocas miles de filas) — el plan de ejecución no
+ * cambia con este refactor, pero se deja la intención explícita en el SQL
+ * para que ningún cambio futuro dependa de que el optimizador lo adivine.
+ */
 function buildEmailSalesQuery({ emails, businessUnit, sendDate }) {
   const emailList = emails.map(sqlStringLiteral).join(', ');
   const { startDate, endDateExclusive } = attributionWindow(sendDate);
   const businessUnitLiteral = sqlStringLiteral(businessUnit);
 
   return `
+    with sales_window as (
+      select sale_id, email, ${REVENUE_COLUMN} as revenue
+      from ${SALES_TABLE}
+      where ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral, alias: '' }).trim()}
+    )
     select
       count(distinct sale_id) as conversions,
-      coalesce(sum(${REVENUE_COLUMN}), 0) as total_sales
-    from ${SALES_TABLE}
+      coalesce(sum(revenue), 0) as total_sales
+    from sales_window
     where email in (${emailList})
-      and ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral, alias: '' }).trim()}
   `.trim();
 }
 

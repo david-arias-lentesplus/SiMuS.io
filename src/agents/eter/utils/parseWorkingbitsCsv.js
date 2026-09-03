@@ -10,12 +10,24 @@ import { dialCodeFor } from './countryDialCodes.js';
 //
 // Columnas esperadas por fila (nombres exactos del CSV de Workingbits,
 // dados por el usuario):
-//   `Communication Name`, `Send At`, `Text`, `To`, `Status`.
+//   `Communication Name`, `Send At`, `Text`, `To`, `Status`,
+//   `Communication Start Date` (Fase 2.3), `Country Name` (Fase 2.3, leída
+//   por detectCountryFromCsv.js — Éter no la vuelve a leer acá).
 //
 // Reglas estrictas (instrucción explícita del usuario):
 //   - `fecha`: se toma del PRIMER `Send At` que aparece para esa campaña
 //     en el archivo (no el más reciente/antiguo — el primero en orden de
 //     aparición del CSV).
+//   - `fechaComunicacion` (Fase 2.3, "REFINAMIENTO FASE 2.3 —
+//     AUTOMATIZACIÓN DE CSV"): se toma del PRIMER `Communication Start
+//     Date` del grupo, mismo criterio que `fecha`. Es un campo DISTINTO
+//     de `fecha`/`Send At` (que puede variar fila a fila si el envío se
+//     hizo en tandas) — `Communication Start Date` es la fecha real de
+//     inicio de la comunicación, y desde esta sesión es la que la
+//     Calculadora usa para autocompletar (y bloquear) "Fecha de envío",
+//     por consistencia con la consulta a Metabase. Se guarda igual de
+//     "cruda" que `fecha` (texto tal como viene del CSV) — el parseo a
+//     `YYYY-MM-DD` lo hace `parseCsvDate` en la Calculadora, no acá.
 //   - `mensaje`: se toma del PRIMER `Text` de esa campaña, mismo criterio.
 //   - `muestra_entregados`: conteo ESTRICTO de filas con
 //     `Status === 'Delivered'` (comparación exacta, sin normalizar
@@ -27,10 +39,12 @@ import { dialCodeFor } from './countryDialCodes.js';
 //     Se descartan valores de `To` vacíos tras la limpieza.
 //
 // @param {Array<Record<string,string>>} rows Filas ya parseadas por PapaParse (header:true).
-// @param {string} countryValue `value` del país elegido en /upload (ver countries_config).
+// @param {string} countryValue `value` del país (Fase 2.3: ya NO lo elige el usuario a mano en
+//   /upload — lo resuelve detectCountryFromCsv.js antes de llamar a esta función).
 // @returns {Array<{
 //   campaignName: string,
 //   fecha: string,
+//   fechaComunicacion: string,
 //   mensaje: string,
 //   muestraEntregados: number,
 //   telefonosValidos: string[],
@@ -50,6 +64,7 @@ export function parseWorkingbitsCsv(rows, countryValue) {
       groups.set(campaignName, {
         campaignName,
         fecha: (row['Send At'] ?? '').trim(),
+        fechaComunicacion: (row['Communication Start Date'] ?? '').trim(),
         mensaje: (row['Text'] ?? '').trim(),
         muestraEntregados: 0,
         telefonosValidos: [],

@@ -67,6 +67,13 @@ conversiones (Hermes).
 - Validar `cleanPhoneNumber()` contra un CSV real exportado de Workingbits (formato exacto de la
   columna `To`: ¿siempre con indicativo?, ¿alguna vez con `+`?, ¿algún cero inicial?) — la heurística
   actual es la mejor suposición razonable, no una certeza probada end-to-end.
+- Igual riesgo, ahora también para `detectCountryFromCsv.js` (Fase 2.3): el formato exacto de las
+  columnas `Country Name` y `Communication Start Date` del CSV real de Workingbits tampoco se pudo
+  verificar contra un archivo de ejemplo. La normalización de `Country Name` (minúsculas, sin
+  acentos) cubre las variantes más probables ("Colombia", "México"/"Mexico", "Brasil"/"Brazil"), y
+  cualquier valor no reconocido — incluido el caso ambiguo de Brasil sin prefijo `NL_`/`LV_` en
+  `Communication Name` — cae a un modal de confirmación manual en vez de asignar un país adivinado.
+  Confirmar con un CSV real que estas dos columnas existen con esos nombres exactos.
 - Qué hacer con campañas re-subidas con el mismo `Communication Name` (¿reemplazar la fila anterior
   en `sms_processed_campaigns`, o acumular versiones?) — hoy `processedCampaignsService.js`
   reemplaza (upsert por nombre de campaña), documentado como decisión de esta sesión, revisable.
