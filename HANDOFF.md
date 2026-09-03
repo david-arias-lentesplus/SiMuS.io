@@ -715,3 +715,28 @@ sin indicativo de país) — visto con datos reales. Pendiente de definir cómo 
 **No se pudo probar end-to-end en producción desde este entorno** (sin credenciales reales de
 Metabase) — solo se validó la consulta candidata contra datos reales vía el conector de desarrollo.
 Pendiente que el usuario vuelva a probar el Grupo SMS y confirme que ya no aparece 502/Terminated.
+
+### Sesión 2026-09-03, madrugada (2) — fix: "column reference \"created_at\" is ambiguous" en el cruce combinado
+
+Tras el rediseño de rendimiento (ADR 0010), el usuario probó el Grupo SMS y obtuvo:
+`SQL query execution failed: ERROR: column reference "created_at" is ambiguous`.
+
+**Causa**: `sharedSalesWhere()` generaba `created_at`, `business_unit` y `status` SIN calificar con
+alias de tabla. Eso era seguro mientras solo se usaba en `buildEmailSalesQuery` (una sola tabla,
+`silver.sales`, sin `join`). El nuevo `buildCombinedSalesQuery` (ADR 0010) hace
+`silver.sales s join silver.customers c` — y se confirmó vía `information_schema.columns` que
+`silver.customers` TAMBIÉN tiene sus propias columnas `created_at`, `business_unit` y `status`. En
+cuanto hay un `join`, Postgres exige calificar cualquier columna que exista en más de una tabla del
+`FROM`, así que las cuatro condiciones de `sharedSalesWhere` quedaron ambiguas.
+
+**Fix**: `sharedSalesWhere()` ahora acepta un parámetro `alias` (`'s'` por defecto) y prefija las
+cuatro columnas con `${alias}.`. `buildEmailSalesQuery` la llama con `alias: ''` (sigue sin alias,
+como antes — no hay ambigüedad posible con una sola tabla). `buildCombinedSalesQuery` la llama con
+`alias: 's'` explícito (coincide con el alias de `silver.sales` en su `FROM`). Validado de nuevo
+contra datos reales vía `mcp__livo_metabase__execute`: la consulta combinada (con `join`) y la de
+solo-email (sin `join`) devuelven ambas el resultado esperado (`sale_id=3607600, revenue=4.35`),
+`node --check` confirma sintaxis válida.
+
+**Lección**: al agregar un `join` a una consulta que reutiliza cláusulas WHERE compartidas escritas
+para una sola tabla, revisar si la tabla nueva tiene columnas con el mismo nombre — no asumirlo,
+verificar contra `information_schema.columns` como se hizo aquí.

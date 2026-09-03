@@ -218,13 +218,30 @@ function addDaysISO(dateStr, days) {
   return d.toISOString().slice(0, 10);
 }
 
-/** Cláusulas WHERE de ventana de fecha + país + no-cancelado, compartidas por todo cruce sobre silver.sales. */
-function sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral }) {
+/**
+ * Cláusulas WHERE de ventana de fecha + país + no-cancelado, compartidas
+ * por todo cruce sobre silver.sales.
+ *
+ * FIX (sesión "nuevo error — column reference created_at is ambiguous"):
+ * `silver.customers` tiene sus PROPIAS columnas `created_at`,
+ * `business_unit` y `status` (confirmado vía `information_schema.columns`
+ * contra el esquema real). Mientras `buildEmailSalesQuery` consulta
+ * `silver.sales` sola (sin alias, sin ambigüedad posible),
+ * `buildCombinedSalesQuery` hace `join` con `silver.customers` — ahí,
+ * dejar estas columnas sin calificar es ambiguo para Postgres apenas hay
+ * un segundo `join`, sin importar si el nombre de columna coincide o no
+ * en ambas tablas. Por eso ahora se acepta un alias explícito de tabla
+ * (por defecto `s`, el usado en ambos builders) y todas las columnas se
+ * califican con él — nunca dejar una columna de `silver.sales` sin
+ * prefijo en una consulta que además involucre otra tabla.
+ */
+function sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral, alias = 's' }) {
+  const p = alias ? `${alias}.` : '';
   return `
-      created_at >= ${startDate}::timestamp
-      and created_at < ${endDateExclusive}::timestamp
-      and business_unit = ${businessUnitLiteral}
-      and status not ilike '%cancel%'
+      ${p}created_at >= ${startDate}::timestamp
+      and ${p}created_at < ${endDateExclusive}::timestamp
+      and ${p}business_unit = ${businessUnitLiteral}
+      and ${p}status not ilike '%cancel%'
   `;
 }
 
@@ -249,7 +266,7 @@ function buildEmailSalesQuery({ emails, businessUnit, sendDate }) {
       coalesce(sum(${REVENUE_COLUMN}), 0) as total_sales
     from ${SALES_TABLE}
     where email in (${emailList})
-      and ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral }).trim()}
+      and ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral, alias: '' }).trim()}
   `.trim();
 }
 
@@ -273,7 +290,7 @@ function buildCombinedSalesQuery({ emails, phones, businessUnit, sendDate }) {
     select s.sale_id as sale_id, s.${REVENUE_COLUMN} as revenue
     from ${SALES_TABLE} s
     join ${CUSTOMERS_TABLE} c on c.customer_id = s.customer_id
-    where ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral }).trim()}
+    where ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral, alias: 's' }).trim()}
       and (${matchClause})
   `.trim();
 }
