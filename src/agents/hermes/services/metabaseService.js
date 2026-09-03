@@ -252,9 +252,28 @@ function buildSalesByCustomerIdsQuery({ customerIds, businessUnit, sendDate }) {
 }
 
 /**
- * Parsea una respuesta del servidor MCP: el body llega en formato SSE, no
- * como JSON plano. Se toma el último bloque `data:` y se parsea como el
- * JSON-RPC 2.0 de respuesta.
+ * Parsea una respuesta del servidor MCP: normalmente el body llega en
+ * formato SSE (una o más líneas `data: {...}`), no como JSON plano. Se
+ * toma el último bloque `data:` y se parsea como el JSON-RPC 2.0 de
+ * respuesta.
+ *
+ * Corrección (sesión "NUEVO ERROR — Respuesta del servidor MCP de
+ * Metabase sin cuerpo utilizable"): el cruce combinado del Grupo SMS
+ * (ADR 0009) hace varias llamadas SECUENCIALES al MCP para resolver
+ * `customer_id` por lotes (`collectMatchedCustomerIds`) antes de agregar
+ * ventas — con un segmento de HubSpot o un CSV grandes, la suma de esas
+ * llamadas puede acercarse al límite de ejecución de una función
+ * serverless de Vercel (ver el riesgo ya documentado en ADR 0006,
+ * "Riesgo a vigilar"), y el gateway puede cortar la conexión a mitad de
+ * la respuesta SSE o devolver un body vacío/truncado — antes esto se
+ * reportaba con un mensaje genérico que no dejaba ver la causa. Ahora:
+ *   1. Si no hay líneas `data:` pero el body SÍ tiene contenido y parsea
+ *      como JSON plano, se usa ese JSON directamente (algunos gateways
+ *      responden JSON plano en vez de SSE en ciertos caminos de error).
+ *   2. Si de verdad no hay nada utilizable, el error incluye un
+ *      fragmento del body crudo (hasta 300 caracteres) para poder
+ *      diagnosticar sin adivinar — timeout, body vacío, HTML de un
+ *      proxy/gateway intermedio, etc.
  */
 function parseSseJsonRpc(bodyText) {
   const dataLines = bodyText
@@ -263,15 +282,31 @@ function parseSseJsonRpc(bodyText) {
     .map((line) => line.slice(5).trim())
     .filter(Boolean);
 
-  if (dataLines.length === 0) {
-    throw new MetabaseApiError('Respuesta del servidor MCP de Metabase sin cuerpo utilizable.', 502);
+  if (dataLines.length > 0) {
+    try {
+      return JSON.parse(dataLines[dataLines.length - 1]);
+    } catch {
+      throw new MetabaseApiError('No se pudo parsear la respuesta del servidor MCP de Metabase.', 502);
+    }
   }
 
-  try {
-    return JSON.parse(dataLines[dataLines.length - 1]);
-  } catch {
-    throw new MetabaseApiError('No se pudo parsear la respuesta del servidor MCP de Metabase.', 502);
+  // Fallback: sin líneas `data:` pero con body no vacío — intentar JSON plano.
+  const trimmed = bodyText.trim();
+  if (trimmed) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      // no era JSON plano tampoco; cae al error de abajo con el fragmento crudo
+    }
   }
+
+  const snippet = trimmed ? trimmed.slice(0, 300) : '(body completamente vacío)';
+  throw new MetabaseApiError(
+    `Respuesta del servidor MCP de Metabase sin cuerpo utilizable. Posible corte por timeout ` +
+      `(la consulta combinada hace varias llamadas secuenciales — ver ADR 0006/0009) o respuesta ` +
+      `inesperada del gateway. Fragmento recibido: ${snippet}`,
+    502
+  );
 }
 
 /** Llama a una tool del servidor MCP de Metabase (`tools/call`) y devuelve su resultado ya parseado. */
@@ -370,12 +405,20 @@ export async function fetchConversionsFromWarehouse({ emails, businessUnit, send
   }
   assertBusinessUnitAndDate(businessUnit, sendDate);
 
-  const batches = chunkArray(cleanEmails, BATCH_SIZE);
+  // En paralelo (mismo motivo que collectMatchedCustomerIds/
+  // aggregateSalesForCustomerIds — ver esa nota): mitiga el riesgo, ya
+  // documentado en ADR 0006, de que muchos lotes secuenciales se acerquen
+  // al límite de ejecución de una función serverless de Vercel.
+  const batchResults = await Promise.all(
+    chunkArray(cleanEmails, BATCH_SIZE).map((emailBatch) => {
+      const query = buildEmailSalesQuery({ emails: emailBatch, businessUnit, sendDate });
+      return runAggregateQuery(query, config);
+    })
+  );
+
   let totalConversions = 0;
   let totalSales = 0;
-  for (const emailBatch of batches) {
-    const query = buildEmailSalesQuery({ emails: emailBatch, businessUnit, sendDate });
-    const batchResult = await runAggregateQuery(query, config);
+  for (const batchResult of batchResults) {
     totalConversions += batchResult.conversions;
     totalSales += batchResult.totalSales;
   }
@@ -391,28 +434,36 @@ export async function fetchConversionsFromWarehouse({ emails, businessUnit, send
  * nunca se cuenta dos veces en el agregado de ventas.
  */
 async function collectMatchedCustomerIds({ emails, phones, businessUnit }, config) {
-  const ids = new Set();
-
   // Lotes de CUSTOMER_LOOKUP_BATCH_SIZE (500, no BATCH_SIZE/800): cada
   // valor de un lote puede matchear un customer_id distinto, así que el
   // lote de entrada nunca puede ser mayor que el límite de filas que el
   // servidor deja pedir — ver nota de MAX_ROW_LIMIT arriba.
-  for (const emailBatch of chunkArray(emails, CUSTOMER_LOOKUP_BATCH_SIZE)) {
+  //
+  // EN PARALELO, no secuencial (corrección de la sesión "Respuesta del
+  // servidor MCP de Metabase sin cuerpo utilizable"): con un segmento de
+  // HubSpot y/o un CSV grandes, resolver cada lote uno por uno podía sumar
+  // más tiempo del que tolera la función serverless de Vercel antes de
+  // cortar la conexión (ver ADR 0006/0009, riesgo ya documentado). Email
+  // y teléfono son consultas independientes entre sí y entre lotes, así
+  // que se disparan todas a la vez con Promise.all — el volumen esperado
+  // (unos pocos lotes por búsqueda) no satura al servidor MCP.
+  const emailBatchPromises = chunkArray(emails, CUSTOMER_LOOKUP_BATCH_SIZE).map((emailBatch) => {
     const query = buildCustomersByEmailQuery({ emails: emailBatch, businessUnit });
-    const rows = await runRowsQuery(query, config, CUSTOMER_LOOKUP_BATCH_SIZE);
-    for (const row of rows) {
-      if (row?.customer_id != null) ids.add(String(row.customer_id));
-    }
-  }
-
-  for (const phoneBatch of chunkArray(phones, CUSTOMER_LOOKUP_BATCH_SIZE)) {
+    return runRowsQuery(query, config, CUSTOMER_LOOKUP_BATCH_SIZE);
+  });
+  const phoneBatchPromises = chunkArray(phones, CUSTOMER_LOOKUP_BATCH_SIZE).map((phoneBatch) => {
     const query = buildCustomersByPhoneQuery({ phones: phoneBatch, businessUnit });
-    const rows = await runRowsQuery(query, config, CUSTOMER_LOOKUP_BATCH_SIZE);
+    return runRowsQuery(query, config, CUSTOMER_LOOKUP_BATCH_SIZE);
+  });
+
+  const batchResults = await Promise.all([...emailBatchPromises, ...phoneBatchPromises]);
+
+  const ids = new Set();
+  for (const rows of batchResults) {
     for (const row of rows) {
       if (row?.customer_id != null) ids.add(String(row.customer_id));
     }
   }
-
   return Array.from(ids);
 }
 
@@ -420,11 +471,18 @@ async function collectMatchedCustomerIds({ emails, phones, businessUnit }, confi
 async function aggregateSalesForCustomerIds({ customerIds, businessUnit, sendDate }, config) {
   if (customerIds.length === 0) return { conversions: 0, totalSales: 0 };
 
+  // En paralelo por el mismo motivo que collectMatchedCustomerIds arriba
+  // — cada lote de customer_id es una consulta agregada independiente.
+  const batchResults = await Promise.all(
+    chunkArray(customerIds, CUSTOMER_ID_BATCH_SIZE).map((idBatch) => {
+      const query = buildSalesByCustomerIdsQuery({ customerIds: idBatch, businessUnit, sendDate });
+      return runAggregateQuery(query, config);
+    })
+  );
+
   let totalConversions = 0;
   let totalSales = 0;
-  for (const idBatch of chunkArray(customerIds, CUSTOMER_ID_BATCH_SIZE)) {
-    const query = buildSalesByCustomerIdsQuery({ customerIds: idBatch, businessUnit, sendDate });
-    const batchResult = await runAggregateQuery(query, config);
+  for (const batchResult of batchResults) {
     totalConversions += batchResult.conversions;
     totalSales += batchResult.totalSales;
   }

@@ -654,3 +654,29 @@ choca con `row_limit`.
 
 No se pudo volver a probar en vivo desde este entorno — pendiente que el usuario confirme que el
 Grupo SMS ya cruza correctamente tras este fix.
+
+### Sesión 2026-09-03, noche (2) — fix: "Respuesta del servidor MCP de Metabase sin cuerpo utilizable"
+
+Tras el fix de `row_limit`, el usuario probó de nuevo el Grupo SMS y obtuvo este nuevo error, con
+`res.ok` en 200 pero sin líneas `data:` en el body. Diagnóstico más probable (no confirmable desde
+este entorno, sin acceso a las credenciales de producción): el cruce combinado hace varias llamadas
+SECUENCIALES al MCP (una por lote de email, otra por lote de teléfono, más las de agregación de
+ventas) — con un segmento de HubSpot y/o CSV grandes, la suma de esos round-trips puede acercarse al
+límite de ejecución de la función serverless de Vercel (riesgo ya anotado en ADR 0006, "Riesgo a
+vigilar"), cortando la conexión a mitad de la respuesta SSE.
+
+Dos cambios en `metabaseService.js`:
+1. Todas las funciones que batchean contra el MCP (`fetchConversionsFromWarehouse`,
+   `collectMatchedCustomerIds`, `aggregateSalesForCustomerIds`) ahora disparan sus lotes EN
+   PARALELO (`Promise.all`) en vez de secuencial — reduce el tiempo total de la función serverless
+   cuando hay más de un lote.
+2. `parseSseJsonRpc` ahora: (a) intenta parsear el body como JSON plano si no hay líneas `data:`
+   (algunos gateways responden así en ciertos caminos de error), y (b) si de verdad no hay nada
+   utilizable, el error incluye un fragmento del body crudo (hasta 300 caracteres) para poder
+   diagnosticar la próxima vez sin adivinar.
+
+**No se pudo reproducir ni confirmar la causa raíz desde este entorno** (sin las credenciales reales
+de `METABASE_MCP_URL`/`METABASE_MCP_KEY` de producción). Si el error persiste tras este fix, el
+fragmento de body que ahora se incluye en el mensaje de error es la pista clave a revisar — o
+considerar si el plan de Vercel necesita más tiempo de ejecución por función (`maxDuration` en
+`vercel.json`/`api/metabase/conversions.js`, disponible en planes pagos de Vercel).
