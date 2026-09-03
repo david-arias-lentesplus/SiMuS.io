@@ -1,41 +1,50 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useFilteredCampaigns } from './useFilteredCampaigns.js';
 import { useCountriesConfig } from '../../demeter/hooks/useCountriesConfig.js';
+import { useProcessedCampaigns } from '../../demeter/hooks/useProcessedCampaigns.js';
 import { COUNTRIES as STATIC_COUNTRIES_FALLBACK } from '../constants/countries.js';
 import { EVENT_TYPES, detectEventType } from '../utils/detectEventType.js';
 import { fetchSegmentFromHubSpot } from '../utils/fetchSegmentFromHubSpot.js';
 import { fetchConversionsFromMetabase } from '../utils/fetchConversionsFromMetabase.js';
+import { fetchConversionsByPhoneFromMetabase } from '../utils/fetchConversionsByPhoneFromMetabase.js';
+import { parseCsvDate } from '../utils/parseCsvDate.js';
 import { computeMetrics } from '../utils/computeMetrics.js';
 import { round2 } from '../../hefesto/utils/format.js';
 
-// Minerva — hook de "organización" de la Calculadora Híbrida (pivote de
-// Fase 1, sesión 2026-09-02; integración real con HubSpot en Fase 2;
-// cruce real de conversiones contra Metabase en el ajuste de esa misma
-// sesión; catálogo de países vía Supabase en Fase 3, ADR 0007). Es la
-// única puerta de entrada que CalculatorPage.jsx (Hefesto) debe usar:
-// mantiene el estado del formulario, orquesta la búsqueda de segmentos
-// (tamaño de muestra REAL vía Hermes/HubSpot + conversiones y ventas
-// REALES vía Hermes/Metabase) y separa con claridad las dos acciones del
-// flujo:
+// Minerva — hook de "organización" de la Calculadora (pivote de Fase 1,
+// sesión 2026-09-02; integración real con HubSpot en Fase 2; cruce real
+// de conversiones contra Metabase en esa misma sesión; catálogo de
+// países vía Supabase en Fase 3, ADR 0007; PIVOTE DE FASE 2.1 — ver ADR
+// 0008 — automatización del Grupo SMS desde el CSV de Workingbits que
+// Éter procesó). Es la única puerta de entrada que CalculatorPage.jsx
+// (Hefesto) debe usar.
 //
+// Cambio de Fase 2.1: "Nombre de la campaña" deja de ser texto libre y
+// pasa a ser la selección de una campaña ya procesada por Éter (ver
+// useProcessedCampaigns, Deméter). Al elegirla se autocompletan fecha,
+// mensaje, tipo de evento y el tamaño de muestra REAL del Grupo SMS
+// (`muestra_entregados`, ahora un campo ReadOnly — ver CampaignForm.jsx).
+// El botón "Buscar" del Grupo SMS ya no consulta HubSpot: cruza
+// directamente `telefonos_validos` de la campaña elegida contra Metabase
+// (ver fetchConversionsByPhoneFromMetabase.js). El Grupo Control NO
+// cambió en este pivote — sigue buscando un segmento de HubSpot por
+// nombre, igual que antes (ver ADR 0008 para por qué se dejó así).
+//
+// Las dos acciones del flujo se mantienen sin cambios:
 //   1. calculate()      -> SOLO calcula en memoria (computeMetrics), NUNCA
 //                           toca Supabase.
 //   2. approveAndSave()  -> únicamente cuando el usuario aprueba
 //                           explícitamente el reporte ya calculado, hace el
-//                           insert en Supabase vía Deméter
-//                           (useFilteredCampaigns().save).
-//
-// Ver instrucción del usuario en HANDOFF.md, sesión 2026-09-02: "Aprobación
-// Explícita".
+//                           insert en Supabase vía Deméter.
 
 const EMPTY_FORM = {
+  processedCampaignId: '', // id de sms_processed_campaigns elegido en el <select> (Fase 2.1)
   name: '',
   sendDate: '',
   countryValue: '', // se completa solo con el primer país que cargue useCountriesConfig
   eventType: EVENT_TYPES[0],
   message: '',
-  smsSegmentName: '',
-  smsN: '',
+  smsN: '',   // ahora ReadOnly: viene de muestra_entregados de la campaña elegida
   smsC: '',
   smsS: '',
   ctrlSegmentName: '',
@@ -50,10 +59,8 @@ const IDLE_APPROVAL = { status: 'idle', error: null };
 export function useCampaignCalculator() {
   const { save } = useFilteredCampaigns();
   // Fase 3 (ADR 0007): fuente de verdad ahora es la tabla countries_config
-  // (solo países activos). Si viene vacía (tabla recién migrada sin
-  // deploy coordinado, error de red, RLS todavía no aplicado en un
-  // entorno viejo) se cae al catálogo estático como red de seguridad,
-  // para no dejar la Calculadora inutilizable.
+  // (solo países activos). Si viene vacía se cae al catálogo estático
+  // como red de seguridad, para no dejar la Calculadora inutilizable.
   const { countries: countriesConfig, loading: countriesLoading, error: countriesError } =
     useCountriesConfig({ onlyActive: true });
 
@@ -77,6 +84,30 @@ export function useCampaignCalculator() {
   const [report, setReport] = useState(null); // objeto `m` calculado en memoria
   const [approval, setApproval] = useState(IDLE_APPROVAL); // idle|saving|saved|error
 
+  // Fase 2.1: campañas agrupadas por Éter desde el CSV de Workingbits.
+  // Se listan todas y se filtran más abajo por país una vez que `country`
+  // está resuelto (ver availableProcessedCampaigns) — NOTA:
+  // `sms_processed_campaigns.country_value` guarda el `value` del
+  // catálogo ESTÁTICO histórico (ej. 'colombia'), no necesariamente el
+  // uuid de countries_config, así que el filtro compara contra ambos.
+  const { campaigns: processedCampaigns, loading: processedCampaignsLoading } = useProcessedCampaigns();
+
+  const country = useMemo(
+    () => countries.find((c) => c.value === form.countryValue) ?? countries[0] ?? { label: '', costPerSms: 0, businessUnit: '' },
+    [countries, form.countryValue]
+  );
+
+  const availableProcessedCampaigns = useMemo(() => {
+    if (!country?.businessUnit) return [];
+    const staticValue = STATIC_COUNTRIES_FALLBACK.find((c) => c.businessUnit === country.businessUnit)?.value;
+    return processedCampaigns.filter((pc) => pc.country_value === staticValue || pc.country_value === form.countryValue);
+  }, [processedCampaigns, country, form.countryValue]);
+
+  const selectedProcessedCampaign = useMemo(
+    () => availableProcessedCampaigns.find((pc) => pc.id === form.processedCampaignId) ?? null,
+    [availableProcessedCampaigns, form.processedCampaignId]
+  );
+
   // Regla reactiva: mientras el usuario no haya tocado el <select> de tipo
   // de evento a mano, se auto-completa leyendo el nombre de campaña.
   useEffect(() => {
@@ -93,11 +124,6 @@ export function useCampaignCalculator() {
     }
   }, [countries, form.countryValue]);
 
-  const country = useMemo(
-    () => countries.find((c) => c.value === form.countryValue) ?? countries[0] ?? { label: '', costPerSms: 0, businessUnit: '' },
-    [countries, form.countryValue]
-  );
-
   // Cualquier edición del formulario invalida el último reporte calculado
   // (evita aprobar/guardar un reporte que ya no corresponde a los datos
   // visibles en el formulario).
@@ -113,41 +139,85 @@ export function useCampaignCalculator() {
   }
 
   /**
-   * Busca el segmento y lo cruza contra ventas reales:
-   *   1. Tamaño de muestra + contactos (con email) REALES vía Hermes/HubSpot.
-   *   2. Conversiones + ventas REALES vía Hermes/Metabase, cruzando esos
-   *      emails contra `silver.sales` en la ventana de atribución desde
-   *      `form.sendDate`, filtrado por `country.businessUnit` y excluyendo
-   *      cancelaciones (ver src/agents/hermes/services/metabaseService.js).
-   * Requiere que el usuario ya haya elegido la fecha de envío y el país
-   * (el segundo siempre tiene un valor por defecto una vez que
-   * useCountriesConfig termina de cargar) — sin fecha de envío no hay
-   * ventana de atribución que calcular, así que se valida antes de llamar
-   * a HubSpot para no gastar esa consulta en vano.
-   * `totalSales` se redondea a 2 decimales (round2) antes de guardarse en
-   * el formulario — corrige el bug de QA de Fase 3 donde la suma de
-   * lotes de Metabase podía traer basura de punto flotante
-   * (13084,510000000002) directo al input editable (ver format.js).
-   * Listas grandes pueden tardar unos segundos en HubSpot (paginación +
-   * batch/read en lotes de 100) — setSearch({loading:true}) queda activo
-   * mientras tanto para que Hefesto muestre el estado de carga.
+   * Fase 2.1: el usuario elige en un <select> una campaña ya procesada
+   * por Éter (en vez de escribir el nombre a mano). Autocompleta fecha,
+   * mensaje, tipo de evento y el tamaño de muestra REAL (Entregados) del
+   * Grupo SMS. Limpia cualquier búsqueda/reporte anterior porque cambia
+   * la campaña de base.
    */
-  async function searchSegment(kind) {
-    const isSms = kind === 'sms';
-    const setSearch = isSms ? setSmsSearch : setCtrlSearch;
-    const nameField = isSms ? 'smsSegmentName' : 'ctrlSegmentName';
-    const segmentName = form[nameField].trim();
+  function selectProcessedCampaign(processedCampaignId) {
+    const campaign = availableProcessedCampaigns.find((pc) => pc.id === processedCampaignId);
+    if (!campaign) {
+      setField('processedCampaignId', '');
+      return;
+    }
+    setEventTypeTouched(false); // vuelve a auto-detectar para la campaña recién elegida
+    setForm((f) => ({
+      ...f,
+      processedCampaignId: campaign.id,
+      name: campaign.campaign_name,
+      sendDate: parseCsvDate(campaign.send_date),
+      message: campaign.message || '',
+      eventType: detectEventType(campaign.campaign_name),
+      smsN: String(campaign.muestra_entregados ?? 0),
+      smsC: '',
+      smsS: '',
+    }));
+    setSmsSearch(IDLE_SEARCH);
+    setReport(null);
+    setApproval(IDLE_APPROVAL);
+  }
 
-    if (!segmentName) {
-      setSearch({ loading: false, error: 'Ingresa el nombre del segmento primero.' });
+  /**
+   * Grupo SMS (Fase 2.1): cruza `telefonos_validos` de la campaña elegida
+   * directamente contra Metabase — ya NO busca ningún segmento en
+   * HubSpot (ver ADR 0008). Requiere campaña elegida + fecha de envío
+   * (siempre viene autocompletada al elegir la campaña, pero el usuario
+   * puede editarla si el CSV traía una fecha rara — ver parseCsvDate.js).
+   */
+  async function searchSmsGroup() {
+    if (!selectedProcessedCampaign) {
+      setSmsSearch({ loading: false, error: 'Elige primero una campaña del CSV cargado en /upload.' });
       return;
     }
     if (!form.sendDate) {
-      setSearch({ loading: false, error: 'Selecciona la fecha de envío antes de buscar el segmento.' });
+      setSmsSearch({ loading: false, error: 'Selecciona la fecha de envío antes de buscar.' });
       return;
     }
 
-    setSearch({ loading: true, error: null });
+    setSmsSearch({ loading: true, error: null });
+    try {
+      const { conversions, totalSales } = await fetchConversionsByPhoneFromMetabase({
+        phones: selectedProcessedCampaign.telefonos_validos ?? [],
+        businessUnit: country.businessUnit,
+        sendDate: form.sendDate,
+      });
+      setForm((f) => ({ ...f, smsC: String(conversions), smsS: String(round2(totalSales)) }));
+      setReport(null);
+      setApproval(IDLE_APPROVAL);
+      setSmsSearch({ loading: false, error: null });
+    } catch (e) {
+      setSmsSearch({ loading: false, error: e.message });
+    }
+  }
+
+  /**
+   * Grupo Control (sin cambios en el pivote de Fase 2.1): sigue buscando
+   * el tamaño de muestra REAL vía Hermes/HubSpot y el cruce de
+   * conversiones/ventas vía Hermes/Metabase por email — ver ADR 0008.
+   */
+  async function searchControlGroup() {
+    const segmentName = form.ctrlSegmentName.trim();
+    if (!segmentName) {
+      setCtrlSearch({ loading: false, error: 'Ingresa el nombre del segmento primero.' });
+      return;
+    }
+    if (!form.sendDate) {
+      setCtrlSearch({ loading: false, error: 'Selecciona la fecha de envío antes de buscar el segmento.' });
+      return;
+    }
+
+    setCtrlSearch({ loading: true, error: null });
     try {
       const { sampleSize, contacts } = await fetchSegmentFromHubSpot(segmentName);
       const emails = contacts.map((c) => c.email).filter(Boolean);
@@ -156,18 +226,17 @@ export function useCampaignCalculator() {
         businessUnit: country.businessUnit,
         sendDate: form.sendDate,
       });
-      const cleanTotalSales = round2(totalSales);
       setForm((f) => ({
         ...f,
-        ...(isSms
-          ? { smsN: String(sampleSize), smsC: String(conversions), smsS: String(cleanTotalSales) }
-          : { ctrlN: String(sampleSize), ctrlC: String(conversions), ctrlS: String(cleanTotalSales) }),
+        ctrlN: String(sampleSize),
+        ctrlC: String(conversions),
+        ctrlS: String(round2(totalSales)),
       }));
       setReport(null);
       setApproval(IDLE_APPROVAL);
-      setSearch({ loading: false, error: null });
+      setCtrlSearch({ loading: false, error: null });
     } catch (e) {
-      setSearch({ loading: false, error: e.message });
+      setCtrlSearch({ loading: false, error: e.message });
     }
   }
 
@@ -222,9 +291,14 @@ export function useCampaignCalculator() {
     countriesLoading,
     countriesError,
     eventTypes: EVENT_TYPES,
+    processedCampaigns: availableProcessedCampaigns,
+    processedCampaignsLoading,
+    selectedProcessedCampaign,
+    selectProcessedCampaign,
     smsSearch,
     ctrlSearch,
-    searchSegment,
+    searchSmsGroup,
+    searchControlGroup,
     report,
     calculate,
     approveAndSave,

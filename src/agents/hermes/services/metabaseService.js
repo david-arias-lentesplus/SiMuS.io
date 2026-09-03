@@ -51,9 +51,31 @@
 // disjunta entre lotes (un mismo email no puede caer en dos lotes
 // distintos, así que no hay doble conteo de ventas).
 //
+// PIVOTE FASE 2.1 (sesión "PIVOTE FASE 2.1 — Ingesta de CSV y
+// Automatización de Calculadora"): se agregó `fetchConversionsFromWarehouseByPhone`,
+// que cruza por TELÉFONO en vez de por email. Motivo: el Grupo SMS de la
+// Calculadora ya no busca un segmento en HubSpot (ver ADR 0008) — Éter
+// entrega directamente `telefonos_validos` desde el CSV de Workingbits
+// (números limpios de indicativo de país). `silver.sales` NO tiene
+// columna de teléfono (verificado contra el esquema real en esta sesión:
+// solo `email`); el teléfono vive en `silver.customers.phone`, guardado
+// SIN indicativo de país (ej. celulares de Colombia como "3143904965",
+// 10 dígitos, verificado con datos reales). Por eso el cruce por teléfono
+// necesita un JOIN: primero resolver `customer_id` en `silver.customers`
+// por `phone` + `business_unit`, y con esos `customer_id` (ya
+// deduplicados) sí hacer el `join` contra `silver.sales` — así se evita
+// que un teléfono que por error matchee más de una fila de clientes
+// duplique ventas en la suma (ver buildPhoneQuery, usa un
+// `with matched_customers as (select distinct customer_id ...)`).
+// El cruce por EMAIL (`fetchConversionsFromWarehouse`, sin cambios) se
+// mantiene para el Grupo Control, que sigue usando búsqueda de lista de
+// HubSpot como antes — ver ADR 0008 para por qué no se migró también el
+// Grupo Control en este pivote.
+//
 // Reemplaza src/agents/minerva/utils/simulateConversions.js (eliminado en
-// esta misma sesión). Contrato de negocio (verificado por el usuario
-// contra el esquema real de `silver.sales` en la base DWH de Metabase):
+// una sesión anterior). Contrato de negocio del cruce por EMAIL
+// (verificado por el usuario contra el esquema real de `silver.sales` en
+// la base DWH de Metabase):
 //
 //   1. Cruce por email: `email IN (...)` contra los correos que Hermes ya
 //      trajo de HubSpot (ver hubspotService.js).
@@ -66,10 +88,17 @@
 //      'canceled', 'CANCELADO', 'Pedido Cancelado-Pedido CANCELADO', etc.
 //      sin tener que mantener una lista cerrada de variantes.
 //
-// Devuelve: { conversions, totalSales } — conversions = conteo de
-// transacciones únicas válidas (`count(distinct sale_id)`), totalSales =
-// suma de `gmv_usd` (revenue en USD) de esas mismas transacciones,
-// agregados a través de todos los lotes de emails.
+// El cruce por TELÉFONO (fetchConversionsFromWarehouseByPhone) aplica las
+// mismas reglas 2-4, cambiando solo el paso 1: `phone IN (...)` contra
+// `silver.customers` (no contra `silver.sales` directamente) para
+// resolver `customer_id`, filtrado también por `business_unit` en esa
+// misma tabla (evita que un mismo número, sin indicativo, matchee un
+// cliente de otro país por coincidencia).
+//
+// Devuelve en ambos casos: { conversions, totalSales } — conversions =
+// conteo de transacciones únicas válidas (`count(distinct sale_id)`),
+// totalSales = suma de `gmv_usd` (revenue en USD) de esas mismas
+// transacciones, agregados a través de todos los lotes.
 
 export class MetabaseApiError extends Error {
   constructor(message, status) {
@@ -79,25 +108,28 @@ export class MetabaseApiError extends Error {
   }
 }
 
-// Nombre de la tabla y de la columna de fecha usados para el cruce.
-// Verificado contra el esquema real de `silver.sales` (base DWH, id=2 en
-// Metabase) en esta sesión: existen `email`, `business_unit`, `status`,
-// `sale_id`, `created_at` y `gmv_usd` con esos tipos exactos. `created_at`
-// es la columna de "fecha de compra" confirmada explícitamente por el
-// usuario para la ventana de atribución de 7 días (sesión 2026-09-02,
-// ajuste de integración Metabase). `gmv_usd` (revenue ya convertido a
-// dólares) se usó como columna de ventas por instrucción explícita del
-// usuario, en vez de `total` (que viene en la moneda local de cada
-// business_unit — sumar `total` de países distintos habría mezclado
-// monedas sin sentido; `gmv_usd` es comparable entre países).
+// Nombres de tabla/columna verificados contra el esquema real de
+// `silver.sales`/`silver.customers` (base DWH, id=2 en Metabase) en la
+// sesión del pivote de Fase 2.1: `silver.sales` tiene `sale_id`,
+// `customer_id`, `business_unit`, `status`, `created_at`, `email`,
+// `gmv_usd`; `silver.customers` tiene `customer_id`, `phone`,
+// `business_unit` (sin columna de teléfono en `silver.sales`, por eso el
+// cruce por teléfono necesita el join).
 const SALES_TABLE = 'silver.sales';
+const CUSTOMERS_TABLE = 'silver.customers';
 const REVENUE_COLUMN = 'gmv_usd';
 
-// Tamaño máximo de emails por consulta al MCP de Metabase — ver nota
-// "FIX 413 PAYLOAD TOO LARGE" arriba para cómo se determinó este valor.
-const EMAIL_BATCH_SIZE = 800;
+// Tamaño máximo de emails/teléfonos por consulta al MCP de Metabase — ver
+// nota "FIX 413 PAYLOAD TOO LARGE" arriba para cómo se determinó este
+// valor (medido con emails; se reutiliza el mismo margen conservador para
+// teléfonos, que son más cortos que un email típico, así que el margen
+// real es aún mayor).
+const BATCH_SIZE = 800;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Un teléfono ya limpio (ver src/agents/eter/utils/cleanPhoneNumber.js)
+// es solo dígitos; se exige un mínimo razonable para descartar basura.
+const PHONE_RE = /^\d{6,15}$/;
 // Whitelist estricta de business_unit válidos (ver countries.js) — nunca
 // se interpola en el SQL un valor que no venga de esta lista.
 const VALID_BUSINESS_UNITS = new Set(['CO', 'AR', 'CL', 'MX', 'BR', 'LV']);
@@ -137,6 +169,22 @@ function sanitizeEmails(emails) {
   return Array.from(seen);
 }
 
+/**
+ * Valida y normaliza la lista de teléfonos que llega del cliente
+ * (originada en `telefonos_validos`, ya limpios de indicativo por Éter —
+ * ver src/agents/eter/utils/cleanPhoneNumber.js). Descarta silenciosamente
+ * cualquier valor que no sea solo dígitos con longitud razonable.
+ */
+function sanitizePhones(phones) {
+  const seen = new Set();
+  for (const raw of Array.isArray(phones) ? phones : []) {
+    if (typeof raw !== 'string' && typeof raw !== 'number') continue;
+    const phone = String(raw).trim();
+    if (phone && PHONE_RE.test(phone)) seen.add(phone);
+  }
+  return Array.from(seen);
+}
+
 /** Parte un array en sub-arrays de a lo sumo `size` elementos. */
 function chunkArray(items, size) {
   const chunks = [];
@@ -152,16 +200,23 @@ function addDaysISO(dateStr, days) {
   return d.toISOString().slice(0, 10);
 }
 
-function buildQuery({ emails, businessUnit, sendDate }) {
+/** Cláusulas WHERE compartidas por ambas variantes (email/teléfono) sobre silver.sales. */
+function sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral }) {
+  return `
+      created_at >= ${startDate}::timestamp
+      and created_at < ${endDateExclusive}::timestamp
+      and business_unit = ${businessUnitLiteral}
+      and status not ilike '%cancel%'
+  `;
+}
+
+function buildEmailQuery({ emails, businessUnit, sendDate }) {
   const emailList = emails.map(sqlStringLiteral).join(', ');
   const startDate = sqlStringLiteral(sendDate);
   // Ventana de 7 DÍAS EN TOTAL contando el día del envío (día 0 al día 6),
   // no "sendDate + 7 días" (que darían 8 días). Se usa "< sendDate + 7 días"
   // (exclusivo) en vez de "<= sendDate + 6 días 23:59:59" para no depender
   // de la resolución de tiempo de `created_at` (timestamp sin zona horaria).
-  // Ajustado el 2026-09-02 por instrucción explícita del usuario: la
-  // versión anterior usaba `addDaysISO(sendDate, 8)`, que sumaba un día de
-  // más (8 días de ventana en vez de 7).
   const endDateExclusive = sqlStringLiteral(addDaysISO(sendDate, 7));
   const businessUnitLiteral = sqlStringLiteral(businessUnit);
 
@@ -171,10 +226,36 @@ function buildQuery({ emails, businessUnit, sendDate }) {
       coalesce(sum(${REVENUE_COLUMN}), 0) as total_sales
     from ${SALES_TABLE}
     where email in (${emailList})
-      and created_at >= ${startDate}::timestamp
-      and created_at < ${endDateExclusive}::timestamp
-      and business_unit = ${businessUnitLiteral}
-      and status not ilike '%cancel%'
+      and ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral }).trim()}
+  `.trim();
+}
+
+/**
+ * Cruce por teléfono (pivote de Fase 2.1): primero resuelve
+ * `customer_id` en `silver.customers` por `phone` + `business_unit` (con
+ * `distinct` para no duplicar si un teléfono matcheara más de un
+ * cliente), y con esos IDs ya deduplicados hace el join contra
+ * `silver.sales` — evita fan-out en el join que inflaría `total_sales`.
+ */
+function buildPhoneQuery({ phones, businessUnit, sendDate }) {
+  const phoneList = phones.map(sqlStringLiteral).join(', ');
+  const startDate = sqlStringLiteral(sendDate);
+  const endDateExclusive = sqlStringLiteral(addDaysISO(sendDate, 7));
+  const businessUnitLiteral = sqlStringLiteral(businessUnit);
+
+  return `
+    with matched_customers as (
+      select distinct customer_id
+      from ${CUSTOMERS_TABLE}
+      where phone in (${phoneList})
+        and business_unit = ${businessUnitLiteral}
+    )
+    select
+      count(distinct s.sale_id) as conversions,
+      coalesce(sum(s.${REVENUE_COLUMN}), 0) as total_sales
+    from ${SALES_TABLE} s
+    join matched_customers mc on mc.customer_id = s.customer_id
+    where ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral }).trim()}
   `.trim();
 }
 
@@ -254,12 +335,9 @@ async function callMcpTool(toolName, args, config) {
   }
 }
 
-/**
- * Ejecuta la consulta de conversiones para UN lote de emails (a lo sumo
- * EMAIL_BATCH_SIZE) y devuelve { conversions, totalSales } de ese lote.
- */
-async function fetchConversionsForBatch({ emailBatch, businessUnit, sendDate }, config) {
-  const query = buildQuery({ emails: emailBatch, businessUnit, sendDate });
+/** Ejecuta `buildQueryFn` contra el MCP y devuelve { conversions, totalSales } de un lote. */
+async function runBatchQuery(buildQueryFn, batchInput, config) {
+  const query = buildQueryFn(batchInput);
   const result = await callMcpTool(
     'execute',
     { database_id: config.databaseId, query, row_limit: 5 },
@@ -277,47 +355,71 @@ async function fetchConversionsForBatch({ emailBatch, businessUnit, sendDate }, 
   };
 }
 
-/**
- * Punto de entrada único que /api/metabase/conversions.js debe llamar.
- * @param {{emails: string[], businessUnit: string, sendDate: string}} input
- *   sendDate en formato 'YYYY-MM-DD' (mismo formato del <input type="date">
- *   del formulario de la Calculadora).
- * @returns {Promise<{conversions: number, totalSales: number}>}
- */
-export async function fetchConversionsFromWarehouse({ emails, businessUnit, sendDate }) {
-  const config = metabaseConfig();
-
-  const cleanEmails = sanitizeEmails(emails);
-  if (cleanEmails.length === 0) {
-    // Nada que cruzar (segmento sin emails válidos) — no es un error del
-    // servidor, es un resultado válido en cero.
-    return { conversions: 0, totalSales: 0 };
-  }
+function assertBusinessUnitAndDate(businessUnit, sendDate) {
   if (!businessUnit || !VALID_BUSINESS_UNITS.has(businessUnit)) {
     throw new MetabaseApiError(`"businessUnit" inválido: ${businessUnit}`, 400);
   }
   if (!sendDate || !DATE_RE.test(sendDate)) {
     throw new MetabaseApiError('"sendDate" debe tener formato YYYY-MM-DD.', 400);
   }
+}
 
-  // Segmentos grandes de HubSpot pueden traer miles de emails: se parte
-  // la lista en lotes para no superar el límite de tamaño de body del
-  // servidor MCP (ver nota "FIX 413 PAYLOAD TOO LARGE" al inicio del
-  // archivo). Se ejecuta un lote a la vez (no en paralelo) para no
-  // saturar al servidor MCP con ráfagas de queries simultáneas contra el
-  // mismo warehouse.
-  const batches = chunkArray(cleanEmails, EMAIL_BATCH_SIZE);
+/**
+ * Punto de entrada por EMAIL (Grupo Control, sin cambios en el pivote de
+ * Fase 2.1). @see fetchConversionsFromWarehouseByPhone para el Grupo SMS.
+ * @param {{emails: string[], businessUnit: string, sendDate: string}} input
+ * @returns {Promise<{conversions: number, totalSales: number}>}
+ */
+export async function fetchConversionsFromWarehouse({ emails, businessUnit, sendDate }) {
+  const config = metabaseConfig();
+  const cleanEmails = sanitizeEmails(emails);
+  if (cleanEmails.length === 0) {
+    return { conversions: 0, totalSales: 0 }; // segmento sin emails válidos: resultado válido en cero
+  }
+  assertBusinessUnitAndDate(businessUnit, sendDate);
 
+  const batches = chunkArray(cleanEmails, BATCH_SIZE);
   let totalConversions = 0;
   let totalSales = 0;
   for (const emailBatch of batches) {
-    const batchResult = await fetchConversionsForBatch(
-      { emailBatch, businessUnit, sendDate },
+    const batchResult = await runBatchQuery(
+      buildEmailQuery,
+      { emails: emailBatch, businessUnit, sendDate },
       config
     );
     totalConversions += batchResult.conversions;
     totalSales += batchResult.totalSales;
   }
+  return { conversions: totalConversions, totalSales };
+}
 
+/**
+ * Punto de entrada por TELÉFONO (Grupo SMS, pivote de Fase 2.1): recibe
+ * `telefonos_validos` de la campaña procesada por Éter (ya limpios de
+ * indicativo de país) y cruza vía `silver.customers.phone` ->
+ * `silver.sales.customer_id`.
+ * @param {{phones: string[], businessUnit: string, sendDate: string}} input
+ * @returns {Promise<{conversions: number, totalSales: number}>}
+ */
+export async function fetchConversionsFromWarehouseByPhone({ phones, businessUnit, sendDate }) {
+  const config = metabaseConfig();
+  const cleanPhones = sanitizePhones(phones);
+  if (cleanPhones.length === 0) {
+    return { conversions: 0, totalSales: 0 }; // campaña sin teléfonos válidos: resultado válido en cero
+  }
+  assertBusinessUnitAndDate(businessUnit, sendDate);
+
+  const batches = chunkArray(cleanPhones, BATCH_SIZE);
+  let totalConversions = 0;
+  let totalSales = 0;
+  for (const phoneBatch of batches) {
+    const batchResult = await runBatchQuery(
+      buildPhoneQuery,
+      { phones: phoneBatch, businessUnit, sendDate },
+      config
+    );
+    totalConversions += batchResult.conversions;
+    totalSales += batchResult.totalSales;
+  }
   return { conversions: totalConversions, totalSales };
 }

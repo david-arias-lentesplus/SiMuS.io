@@ -5,6 +5,7 @@ import HistoryPage from '../../hefesto/pages/HistoryPage.jsx';
 import LoginPage from '../../hefesto/pages/LoginPage.jsx';
 import CountriesSettingsPage from '../../hefesto/pages/settings/CountriesSettingsPage.jsx';
 import UsersSettingsPage from '../../hefesto/pages/settings/UsersSettingsPage.jsx';
+import UploadPage from '../../hefesto/pages/UploadPage.jsx';
 import RequireAuth from './RequireAuth.jsx';
 import RequireAdmin from './RequireAdmin.jsx';
 
@@ -16,6 +17,10 @@ import RequireAdmin from './RequireAdmin.jsx';
 // viewer puede ver Dashboard/Histórico pero no calcular campañas nuevas,
 // eliminar histórico ni entrar a Configuración (ver ADR 0007). /login es
 // la única ruta pública.
+//
+// Pivote de Fase 2.1 (ADR 0008): se agregó /upload (carga de CSV de
+// Workingbits), también admin-only por el mismo criterio que
+// /calculadora — cargar campañas nuevas es una acción de escritura.
 export default function AppRoutes() {
   return (
     <Routes>
@@ -34,6 +39,16 @@ export default function AppRoutes() {
           <RequireAuth>
             <RequireAdmin>
               <CalculatorPage />
+            </RequireAdmin>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/upload"
+        element={
+          <RequireAuth>
+            <RequireAdmin>
+              <UploadPage />
             </RequireAdmin>
           </RequireAuth>
         }

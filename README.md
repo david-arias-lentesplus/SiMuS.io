@@ -23,8 +23,9 @@ El desarrollo de este proyecto está gobernado por un sistema de 9 agentes espec
 
 | Agente | Dominio | Definición |
 |---|---|---|
-| Hermes | Integración con HubSpot (clientes) | [`.claude/agents/hermes.md`](.claude/agents/hermes.md) |
-| Iris | Integración con Workingbits (envío y extracción de eventos SMS) | [`.claude/agents/iris.md`](.claude/agents/iris.md) |
+| Éter | Ingesta/transformación del CSV exportado por Workingbits | [`.claude/agents/eter.md`](.claude/agents/eter.md) |
+| Hermes | Integración con HubSpot (clientes) + cruce de conversiones vía Metabase | [`.claude/agents/hermes.md`](.claude/agents/hermes.md) |
+| Iris | Integración directa con Workingbits (descartada, ver ADR 0008 — hoy se opera por CSV) | [`.claude/agents/iris.md`](.claude/agents/iris.md) |
 | Deméter | Persistencia en Supabase | [`.claude/agents/demeter.md`](.claude/agents/demeter.md) |
 | Hefesto | UX/UI del dashboard | [`.claude/agents/hefesto.md`](.claude/agents/hefesto.md) |
 | Minerva | Rutas y estado global | [`.claude/agents/minerva.md`](.claude/agents/minerva.md) |
@@ -41,8 +42,13 @@ El desarrollo de este proyecto está gobernado por un sistema de 9 agentes espec
 
 ## Estado del proyecto
 
-Fase de andamiaje inicial: sistema de agentes y documentación creados. Aún no hay código de producto ni stack técnico confirmado (framework de frontend, modelo de datos en Supabase, mecanismo de autenticación con HubSpot, mecanismo de extracción de Workingbits). Ver la sección "Tareas a seguir" en `HANDOFF.md` para el detalle.
+Dashboard funcional en producción (React + Vite + Tailwind + Zustand + Supabase), con autenticación
+y roles (admin/viewer) reales vía Supabase Auth + RLS. La integración directa con la API de
+Workingbits fue descartada (ver ADR 0008): el sistema opera cargando el CSV que Workingbits exporta
+en `/upload`, que Éter agrupa por campaña y Deméter persiste; la Calculadora consume esas campañas
+para poblar el Grupo SMS y cruza sus teléfonos contra Metabase vía Hermes. Ver `HANDOFF.md` para el
+detalle sesión a sesión y las tareas pendientes.
 
 ---
 
-_Mantenido por Apolo. Última actualización: 2026-09-01._
+_Mantenido por Apolo. Última actualización: 2026-09-03._

@@ -1,8 +1,10 @@
-// Hefesto — campo reutilizable para las secciones "Grupo SMS" y "Grupo
-// Control" del formulario de la calculadora: nombre de lista de HubSpot +
-// botón "Buscar". Componente 100% presentacional: la búsqueda real
-// (Hermes -> HubSpot, Fase 2) y el cruce real de conversiones/ventas
-// (Hermes -> Metabase, sesión 2026-09-02) viven en useCampaignCalculator
+// Hefesto — campo reutilizable de "nombre de lista de HubSpot + botón
+// Buscar". Desde el pivote de Fase 2.1 (ADR 0008) solo lo usa el Grupo
+// Control: el Grupo SMS dejó de buscar en HubSpot y ahora cruza
+// directamente los teléfonos del CSV de Workingbits contra Metabase (ver
+// CampaignForm.jsx, sección "Grupo SMS"). Componente 100% presentacional:
+// la búsqueda real (Hermes -> HubSpot, Fase 2) y el cruce real de
+// conversiones/ventas (Hermes -> Metabase) viven en useCampaignCalculator
 // (Minerva); este componente solo dispara la acción que recibe por props.
 export default function SegmentLookupField({ segmentName, onSegmentNameChange, onSearch, loading, error }) {
   return (
@@ -32,6 +34,8 @@ export default function SegmentLookupField({ segmentName, onSegmentNameChange, o
         Tamaño de muestra, conversiones y ventas: reales, vía HubSpot + Metabase (Hermes).
         Requiere haber elegido la fecha de envío arriba.
       </p>
+      {/* Nota Fase 2.1 (ADR 0008): este flujo (HubSpot + Metabase por email) sigue vigente
+          SOLO para el Grupo Control. El Grupo SMS usa telefonos_validos del CSV directamente. */}
     </div>
   );
 }

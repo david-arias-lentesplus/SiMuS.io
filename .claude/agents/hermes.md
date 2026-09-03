@@ -60,6 +60,15 @@ sendDate }` -> `{ conversions, totalSales }`. Ver ADR 0006 para el detalle compl
 trató como una excepción puntual y no como una redefinición permanente del dominio de Iris —
 Iris sigue siendo la única puerta de entrada al envío de SMS vía Workingbits.
 
+## Pivote de Fase 2.1 (sesión 2026-09-03) — cruce del Grupo SMS por teléfono
+
+`metabaseService.js` ganó `fetchConversionsFromWarehouseByPhone()`: el Grupo SMS de la Calculadora
+ya no busca un segmento en HubSpot (ver ADR 0008 y `.claude/agents/eter.md`) — Éter entrega
+`telefonos_validos` directo del CSV de Workingbits, y Hermes los cruza contra `silver.customers` +
+`silver.sales` (verificado contra el esquema real: `silver.sales` no tiene columna de teléfono, solo
+`silver.customers.phone`). `/api/metabase/conversions.js` acepta `emails` O `phones`. El Grupo
+Control sigue sin cambios (email vía HubSpot).
+
 ## Pendiente de definir
 - ~~Método de autenticación exacto~~ — Resuelto en ADR 0004: Private App Token (`HS_PAT`), vía
   proxy serverless.

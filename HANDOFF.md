@@ -555,3 +555,54 @@ El usuario adjuntó un prototipo funcional (`calculadoraroisms010926.html`, con 
 - Se agregó el andamiaje de proyecto (`package.json`, `vite.config.js`, `index.html`, `.env.example`) necesario para que el código anterior compile como una app real.
 
 Riesgo detectado y corregido por Deméter: el prototipo HTML tenía la URL y la anon key de Supabase hardcodeadas en el archivo; se documenta aquí porque esas credenciales quedaron expuestas en el HTML que el usuario compartió — recomendar rotarlas si ese HTML llegó a circular fuera de esta conversación.
+
+### Sesión 2026-09-03 (pivote de Fase 2.1 — Ingesta de CSV de Workingbits y automatización de la Calculadora)
+
+El usuario descartó la API de Workingbits (integración directa, dominio de Iris) y pidió operar
+cargando el CSV que esa plataforma exporta (columnas `Communication Name`, `Send At`, `Text`, `To`,
+`Status`), automatizando el Grupo SMS de la Calculadora a partir de esos datos. Ver ADR 0008 para el
+detalle completo de la decisión.
+
+Entregado en esta sesión:
+
+- **Se crea el agente Éter** (no existía en SiMuS.io): `src/agents/eter/utils/parseWorkingbitsCsv.js`
+  (agrupa filas por campaña, conteo estricto de `Delivered`, limpia teléfonos),
+  `utils/cleanPhoneNumber.js` + `utils/countryDialCodes.js`. Ver `.claude/agents/eter.md` para la
+  nota de adaptación de dominio (el Éter original de Proyecto Faro era un agente de almacenamiento
+  de archivos, no de ingesta de CSV).
+- **Deméter**: migración `003_sms_processed_campaigns.sql` (nueva tabla, RLS admin-only, depende de
+  `is_admin()` de la migración 002) + `services/processedCampaignsService.js` +
+  `hooks/useProcessedCampaigns.js`.
+- **Hefesto**: página nueva `/upload` (`pages/UploadPage.jsx` + `components/upload/CsvUploadForm.jsx`,
+  usa PapaParse — se agregó `papaparse` a `package.json`, pendiente `npm install` del usuario) y nav
+  item en `Sidebar.jsx`. `CampaignForm.jsx`: "Nombre de la campaña" pasa de texto libre a `<select>`
+  de campañas procesadas; Grupo SMS pierde `SegmentLookupField` y gana un campo `ReadOnly` de tamaño
+  de muestra + botón "Buscar" que cruza directo contra Metabase. Grupo Control sin cambios.
+- **Minerva**: `useCampaignCalculator.js` reescrito — `selectProcessedCampaign()` autocompleta
+  fecha/mensaje/tipo de evento/muestra desde la campaña elegida; `searchSmsGroup()` reemplaza el
+  `searchSegment('sms', ...)` viejo; `searchControlGroup()` es el `searchSegment('control', ...)` de
+  antes, renombrado, sin cambios de lógica. Nuevos utils: `fetchConversionsByPhoneFromMetabase.js`,
+  `parseCsvDate.js`.
+- **Hermes**: `metabaseService.js` gana `fetchConversionsFromWarehouseByPhone()` — verificado contra
+  el esquema real de Metabase en esta sesión (vía el conector `mcp__livo_metabase__*`, el mismo
+  servidor MCP de producción) que `silver.sales` NO tiene columna de teléfono; el cruce por teléfono
+  resuelve primero `customer_id` en `silver.customers` (por `phone` + `business_unit`, con
+  `distinct`) y luego hace `join` contra `silver.sales` por ese id, para no duplicar ventas por
+  fan-out. `api/metabase/conversions.js` ahora acepta `emails` O `phones` (nunca ambos) y
+  dispatchea según cuál llegue.
+
+**Riesgos documentados, no resueltos (ver ADR 0008 para el detalle):** el formato exacto de las
+columnas `To` y `Send At` del CSV real de Workingbits no se pudo verificar contra un archivo de
+ejemplo en esta sesión — `cleanPhoneNumber.js` y `parseCsvDate.js` son la mejor suposición
+razonable, documentadas como heurísticas a validar con el primer CSV real que el usuario suba
+(revisar la vista previa de `/upload` antes de confiar en el cruce de Metabase).
+
+**Pendiente, a cargo del usuario:**
+1. Correr `npm install` (se agregó la dependencia `papaparse`).
+2. Aplicar la migración `003_sms_processed_campaigns.sql` en Supabase (requiere que la 002 ya esté
+   aplicada, por la función `is_admin()`).
+3. Subir un CSV real de Workingbits y revisar la vista previa de `/upload` (conteo de entregados y
+   cantidad de teléfonos válidos) antes de usarlo en la Calculadora — ver riesgos arriba.
+4. Deploy en Vercel + verificación end-to-end del flujo completo (subir CSV -> elegir campaña en la
+   Calculadora -> Buscar -> Calcular -> Aprobar y Guardar), no se pudo probar desde este entorno
+   (misma limitación de siempre, ver sección de `npm run dev`/`vercel dev` más arriba).

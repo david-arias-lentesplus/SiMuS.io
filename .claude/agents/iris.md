@@ -42,6 +42,16 @@ entrada al *envío* de SMS y a los eventos de entrega de Workingbits, que es lo 
 implementarse. Si una sesión futura retoma el envío real de SMS o el mecanismo de extracción de
 Workingbits, ese trabajo le corresponde a Iris igual que antes.
 
+## Pivote de Fase 2.1 (sesión 2026-09-03) — API de Workingbits descartada en favor de CSV
+
+Por instrucción explícita del usuario, la integración directa con la API de Workingbits (envío y
+extracción de eventos) descrita en la sección "Rol" de este documento queda descartada como plan
+inmediato. El sistema opera hoy cargando manualmente el CSV que Workingbits exporta, procesado por
+un agente nuevo, Éter (`.claude/agents/eter.md`) — ver ADR 0008. Esto NO redefine el dominio de Iris
+de forma permanente: si una sesión futura retoma el envío real de SMS o la extracción automática vía
+API/webhook, ese trabajo sigue siendo de Iris. Hasta entonces, Iris no tiene código activo en el
+proyecto (carpeta `src/agents/iris/` solo con README).
+
 ## Pendiente de definir
 - Mecanismo de extracción (webhook push vs. polling con cron) y su frecuencia exacta.
 - Formato y límites exactos de la API de Workingbits (paginación, rate limits).

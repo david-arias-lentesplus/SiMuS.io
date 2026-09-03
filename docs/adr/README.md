@@ -14,3 +14,6 @@ Registro de decisiones de arquitectura relevantes o irreversibles del proyecto S
 - [0003 — Stack de frontend: React + Vite + Tailwind + Zustand](0003-stack-frontend-react-vite-tailwind-zustand.md)
 - [0004 — HubSpot: Private App Token vía proxy serverless en Vercel](0004-hubspot-private-app-token-proxy-vercel.md)
 - [0005 — Variables de entorno del cliente sin prefijo VITE_](0005-env-vars-sin-prefijo-vite.md)
+- [0006 — Cruce de conversiones vía Metabase, implementado en Hermes](0006-metabase-cruce-conversiones-via-hermes.md)
+- [0007 — Fase 3: autenticación, roles y countries_config](0007-fase3-auth-roles-countries-config.md)
+- [0008 — Ingesta de CSV de Workingbits (Éter) y cruce por teléfono en el Grupo SMS](0008-ingesta-csv-workingbits-y-cruce-por-telefono.md)
