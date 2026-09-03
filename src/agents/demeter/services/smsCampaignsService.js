@@ -74,6 +74,13 @@ export async function fetchCampaigns() {
   return data;
 }
 
+/** Busca una campaña por id (para vistas de detalle read-only). */
+export async function fetchCampaignById(id) {
+  const { data, error } = await supabase.from(TABLE).select('*').eq('id', id).single();
+  if (error) throw error;
+  return data;
+}
+
 /** Inserta una campaña calculada. Recibe el objeto `m` de computeMetrics(). */
 export async function insertCampaign(m) {
   const row = toCampaignRow(m);

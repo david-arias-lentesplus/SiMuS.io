@@ -6,7 +6,13 @@ import { fmt$, fmtN, fmtPct, fmtDateShort } from '../../utils/format.js';
 // useCampaignCalculator.calculate() (Minerva) y solo lo pinta: KPIs, tabla
 // comparativa, detalle financiero y el botón de aprobación explícita que
 // dispara el único insert real en Supabase.
-export default function CalculatorReport({ report, approval, onApprove }) {
+//
+// Fase 2.6 (2026-09-03): agrega la prop `readOnly` para reutilizar este
+// mismo componente en /reporte/:id (CampaignReportPage.jsx, vista de
+// detalle read-only del Dashboard) — oculta el subtítulo de "vista previa
+// sin guardar" y todo el bloque de "Aprobación Explícita", ya que ahí el
+// reporte YA está guardado y no hay nada que aprobar.
+export default function CalculatorReport({ report, approval, onApprove, readOnly = false }) {
   if (!report) return null;
   const m = report;
   const roiPct = m.roiReal * 100;
@@ -27,8 +33,9 @@ export default function CalculatorReport({ report, approval, onApprove }) {
         <p className="text-xs uppercase tracking-wide text-white/60">Reporte de Impacto — SMS Marketing</p>
         <h2 className="mt-1 text-2xl font-semibold">{m.name}</h2>
         <p className="mt-1 text-xs text-white/60">
-          Calculado el {fmtDateShort(new Date().toISOString())} — vista previa, aún no guardado en el
-          histórico
+          {readOnly
+            ? 'Reporte guardado en el histórico'
+            : `Calculado el ${fmtDateShort(new Date().toISOString())} — vista previa, aún no guardado en el histórico`}
         </p>
         {m.sendDate ? (
           <p className="mt-2 text-sm text-white/80">
@@ -126,31 +133,33 @@ export default function CalculatorReport({ report, approval, onApprove }) {
         </p>
       </div>
 
-      <div className="no-print rounded-card bg-card p-5 shadow-card">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium text-ink-900">Aprobación Explícita</p>
-            <p className="text-xs text-ink-500">
-              Este reporte solo existe en memoria. Solo se escribe en Supabase al aprobarlo.
-            </p>
+      {readOnly ? null : (
+        <div className="no-print rounded-card bg-card p-5 shadow-card">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-ink-900">Aprobación Explícita</p>
+              <p className="text-xs text-ink-500">
+                Este reporte solo existe en memoria. Solo se escribe en Supabase al aprobarlo.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onApprove}
+              disabled={approval.status === 'saving' || approval.status === 'saved'}
+              className="rounded-lg bg-brand-teal px-5 py-2.5 text-sm font-semibold text-white hover:bg-brand-teal/90 disabled:opacity-50"
+            >
+              {approval.status === 'saving'
+                ? 'Guardando...'
+                : approval.status === 'saved'
+                ? 'Guardado en Histórico ✓'
+                : 'Aprobar y Guardar en Histórico'}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onApprove}
-            disabled={approval.status === 'saving' || approval.status === 'saved'}
-            className="rounded-lg bg-brand-teal px-5 py-2.5 text-sm font-semibold text-white hover:bg-brand-teal/90 disabled:opacity-50"
-          >
-            {approval.status === 'saving'
-              ? 'Guardando...'
-              : approval.status === 'saved'
-              ? 'Guardado en Histórico ✓'
-              : 'Aprobar y Guardar en Histórico'}
-          </button>
+          {approval.status === 'error' ? (
+            <p className="mt-2 text-xs text-state-danger">Error al guardar: {approval.error}</p>
+          ) : null}
         </div>
-        {approval.status === 'error' ? (
-          <p className="mt-2 text-xs text-state-danger">Error al guardar: {approval.error}</p>
-        ) : null}
-      </div>
+      )}
     </div>
   );
 }

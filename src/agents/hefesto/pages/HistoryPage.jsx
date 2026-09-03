@@ -26,6 +26,13 @@ const PAGE_SIZE = 20;
 //   - Los botones de eliminar (fila o "eliminar todo") ahora se ocultan
 //     para un viewer (RLS de sms_campaigns ya lo bloquea del lado del
 //     servidor, esto solo evita mostrarle una acción que va a fallar).
+//
+// Fase 2.6 (2026-09-03, "AMPLIACIÓN DE DASHBOARD, HISTÓRICO Y VISTAS DE
+// DETALLE"): se agregó la columna "Fecha Envío" (`send_date`, la fecha en
+// que la campaña efectivamente se envió) junto a la columna existente
+// "Fecha" (`created_at`, cuándo se calculó/guardó el registro) — Deméter
+// ya traía `send_date` con el `select('*')` de fetchCampaigns(), no hizo
+// falta tocar la query. Si `send_date` es null se muestra "N/A".
 export default function HistoryPage() {
   const { campaigns, loading, error, remove, removeAll } = useFilteredCampaigns();
   const filters = useCampaignStore((s) => s.filters);
@@ -151,10 +158,11 @@ export default function HistoryPage() {
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[900px] text-left text-sm">
+              <table className="w-full min-w-[1000px] text-left text-sm">
                 <thead>
                   <tr className="border-b border-ink-300/40 text-xs uppercase tracking-wide text-ink-500">
                     <SortableTh col="created_at" sort={sort} onSort={setSort}>Fecha</SortableTh>
+                    <SortableTh col="send_date" sort={sort} onSort={setSort}>Fecha Envío</SortableTh>
                     <SortableTh col="campaign_name" sort={sort} onSort={setSort}>Campaña</SortableTh>
                     <SortableTh col="country" sort={sort} onSort={setSort}>País</SortableTh>
                     <SortableTh col="sms_sample" sort={sort} onSort={setSort}>Muestra</SortableTh>
@@ -172,6 +180,7 @@ export default function HistoryPage() {
                     return (
                       <tr key={r.id} className="border-b border-ink-300/20 last:border-0">
                         <td className="py-2 pr-3 text-ink-500">{fmtDateShort(r.created_at)}</td>
+                        <td className="py-2 pr-3 text-ink-500">{r.send_date ? fmtDateShort(r.send_date) : 'N/A'}</td>
                         <td className="py-2 pr-3 font-medium text-ink-900">{r.campaign_name}</td>
                         <td className="py-2 pr-3">
                           <span className="rounded-full bg-surface px-2 py-0.5 text-xs text-ink-700">

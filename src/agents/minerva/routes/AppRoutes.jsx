@@ -7,6 +7,7 @@ import CountriesSettingsPage from '../../hefesto/pages/settings/CountriesSetting
 import UsersSettingsPage from '../../hefesto/pages/settings/UsersSettingsPage.jsx';
 import UploadPage from '../../hefesto/pages/UploadPage.jsx';
 import ProcessedCampaignsPage from '../../hefesto/pages/ProcessedCampaignsPage.jsx';
+import CampaignReportPage from '../../hefesto/pages/CampaignReportPage.jsx';
 import RequireAuth from './RequireAuth.jsx';
 import RequireAdmin from './RequireAdmin.jsx';
 
@@ -28,6 +29,12 @@ import RequireAdmin from './RequireAdmin.jsx';
 // antes de calcular ROI) — admin-only por el mismo criterio que /upload:
 // eliminar una campaña cargada por error es también una acción de
 // escritura destructiva.
+//
+// Fase 2.6 (2026-09-03): se agregó /reporte/:id (detalle read-only de una
+// campaña YA calculada de sms_campaigns, ver CampaignReportPage.jsx) —
+// solo <RequireAuth>, sin <RequireAdmin>, porque es una vista de solo
+// lectura a la que se llega desde el botón "Ver" del Dashboard, visible
+// tanto para admin como para viewer (igual que /historico).
 export default function AppRoutes() {
   return (
     <Routes>
@@ -75,6 +82,14 @@ export default function AppRoutes() {
         element={
           <RequireAuth>
             <HistoryPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/reporte/:id"
+        element={
+          <RequireAuth>
+            <CampaignReportPage />
           </RequireAuth>
         }
       />
