@@ -680,3 +680,38 @@ de `METABASE_MCP_URL`/`METABASE_MCP_KEY` de producción). Si el error persiste t
 fragmento de body que ahora se incluye en el mensaje de error es la pista clave a revisar — o
 considerar si el plan de Vercel necesita más tiempo de ejecución por función (`maxDuration` en
 `vercel.json`/`api/metabase/conversions.js`, disponible en planes pagos de Vercel).
+
+### Sesión 2026-09-03, madrugada — rediseño de rendimiento: 502/Terminated en el cruce combinado del Grupo SMS
+
+El usuario probó de nuevo el Grupo SMS tras los dos fixes anteriores (row_limit, SSE sin cuerpo) y
+obtuvo `502 Bad Gateway` (nginx) o `Terminated`, con diagnóstico propio correcto: "la consulta esta
+demorando demasiado con el tema de relacionar numeros y correos".
+
+**Causa raíz**: el diseño de dos fases de ADR 0009 (`collectMatchedCustomerIds` +
+`aggregateSalesForCustomerIds`) consultaba `silver.customers` DIRECTAMENTE por
+`email IN (...)`/`phone IN (...)`, filtrando solo por `business_unit` — sin ventana de fecha.
+`silver.customers` es una tabla enorme sin acotar (confirmado: BR solo ya tiene 621K+ filas en un
+bucket de longitud de teléfono), así que la consulta nunca se reducía lo suficiente y agotaba el
+tiempo del servidor MCP.
+
+**Fix** (`src/agents/hermes/services/metabaseService.js`, ver ADR 0010 para el detalle completo):
+nueva query única `buildCombinedSalesQuery` que arranca SIEMPRE desde `silver.sales` ya filtrada por
+`business_unit` + ventana de 7 días + `status not ilike '%cancel%'`, y RECIÉN DESPUÉS hace `join`
+contra `silver.customers` para el match de email/phone — nunca escanea `silver.customers` sin acotar.
+Validada empíricamente contra datos reales vía `mcp__livo_metabase__execute` antes de escribir el
+código (ver ADR 0010). `fetchConversionsFromWarehouseCombined` se simplificó a una sola fase, con
+dedupe por `sale_id` (Map) en vez de por `customer_id` (Set). Se eliminaron
+`collectMatchedCustomerIds`, `aggregateSalesForCustomerIds`, `CUSTOMER_ID_BATCH_SIZE` y
+`CUSTOMER_LOOKUP_BATCH_SIZE` (código muerto tras el cambio). `node --check` confirma sintaxis válida.
+
+**Riesgo aceptado**: al pedir filas de venta (no un agregado), la consulta queda sujeta a
+`MAX_ROW_LIMIT = 500` por lote — si un solo lote matchea más de 500 ventas distintas en 7 días, se
+trunca sin avisar. Improbable para volúmenes típicos de SMS, pero documentado como límite conocido.
+
+**Riesgo de calidad de datos detectado (no resuelto)**: el mismo cliente real puede tener más de una
+fila en `silver.customers` con distinto `business_unit` y el `phone` en formato inconsistente (con o
+sin indicativo de país) — visto con datos reales. Pendiente de definir cómo normalizar.
+
+**No se pudo probar end-to-end en producción desde este entorno** (sin credenciales reales de
+Metabase) — solo se validó la consulta candidata contra datos reales vía el conector de desarrollo.
+Pendiente que el usuario vuelva a probar el Grupo SMS y confirme que ya no aparece 502/Terminated.

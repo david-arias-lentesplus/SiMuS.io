@@ -39,17 +39,68 @@
 // misma lista en HubSpot para poder cruzar contra Metabase con el mejor
 // match posible (algunos clientes de `silver.customers` pueden tener
 // email pero no el teléfono limpio del CSV bien matcheado, o viceversa).
-// La función nueva, `fetchConversionsFromWarehouseCombined`, reemplaza a
-// la de solo-teléfono: resuelve primero los `customer_id` de
-// `silver.customers` cuyo `email` esté en la lista de HubSpot **O** cuyo
-// `phone` esté en la lista del CSV (condición `OR`, deduplicados en un
-// `Set` en memoria antes de tocar `silver.sales`, para nunca contar dos
-// veces al mismo cliente si matchea por las dos vías), y LUEGO agrega
-// `silver.sales` por esos `customer_id` ya resueltos. Se hace en dos
-// fases (resolver IDs, después agregar ventas) en vez de un único SQL con
-// `OR` + `IN` gigante, porque emails y teléfonos deben trocearse en lotes
-// distintos para no superar el límite de payload — ver
-// `collectMatchedCustomerIds`.
+// La función `fetchConversionsFromWarehouseCombined` implementa ese match
+// combinado `(email IN (...) OR phone IN (...))` — ver más abajo,
+// "REDISEÑO DE RENDIMIENTO", para el diseño ACTUAL de esa consulta (el
+// diseño original de esta corrección, de dos fases contra
+// silver.customers, quedó obsoleto y fue reemplazado).
+//
+// REDISEÑO DE RENDIMIENTO (sesión 2026-09-03, "error al intentar grupo
+// sms — 502 Bad Gateway / Terminated"): el usuario reportó que la
+// búsqueda del Grupo SMS empezó a fallar con `502 Bad Gateway` (nginx) o
+// `Terminated`, y diagnosticó correctamente la causa: "la consulta esta
+// demorando demasiado con el tema de relacionar numeros y correos".
+//
+// Causa raíz confirmada: el diseño original de ADR 0009 resolvía primero
+// los `customer_id` consultando `silver.customers` DIRECTAMENTE por
+// `email IN (...)` o `phone IN (...)`, filtrando solo por
+// `business_unit` — SIN ninguna ventana de fecha. `silver.customers` es
+// una tabla enorme y sin acotar (confirmado empíricamente en esta misma
+// sesión: solo el business_unit BR ya tiene 621K+ filas en un único
+// bucket de longitud de teléfono), así que ese filtro nunca reducía lo
+// suficiente el conjunto a escanear, y la consulta terminaba agotando el
+// tiempo del servidor MCP (502) o siendo matada por el proceso
+// (Terminated).
+//
+// Fix: `buildCombinedSalesQuery` invierte el orden del join. Arranca
+// SIEMPRE desde `silver.sales` ya filtrada por `business_unit` +
+// ventana de `created_at` (7 días) + `status not ilike '%cancel%'` — un
+// conjunto naturalmente chico y acotado — y RECIÉN DESPUÉS hace `join`
+// contra `silver.customers` para revisar el match de `email`/`phone`.
+// Esto evita por completo el escaneo sin acotar de la tabla de clientes.
+// Validado empíricamente antes de escribir el código, vía
+// `mcp__livo_metabase__execute` (mismo servidor MCP de producción):
+//   select s.sale_id, s.gmv_usd as revenue
+//   from silver.sales s
+//   join silver.customers c on c.customer_id = s.customer_id
+//   where s.business_unit = 'CO'
+//     and s.created_at >= '2026-08-01'::timestamp
+//     and s.created_at < '2026-08-08'::timestamp
+//     and s.status not ilike '%cancel%'
+//     and (c.email in ('mabalejo89@gmail.com') or c.phone in ('3183628705'))
+// → devolvió exactamente 1 fila, excluyendo correctamente una venta
+// cancelada del mismo cliente con timestamp muy cercano.
+//
+// Esto simplifica el diseño de dos fases (`collectMatchedCustomerIds` +
+// `aggregateSalesForCustomerIds`, ambas ELIMINADAS) a una sola fase:
+// `fetchConversionsFromWarehouseCombined` arma consultas
+// `buildCombinedSalesQuery` (por lotes solo si emails+phones no caben en
+// un único payload) y deduplica por `sale_id` en memoria (no por
+// `customer_id`, ya no aplica). `CUSTOMER_ID_BATCH_SIZE` y
+// `CUSTOMER_LOOKUP_BATCH_SIZE` quedaron sin uso y se eliminaron.
+//
+// Riesgo de calidad de datos detectado (NO resuelto, documentado para
+// futuras sesiones): el mismo cliente real puede existir en
+// `silver.customers` con más de una fila con distinto `business_unit`
+// (ej. AR y CO) y con el `phone` en formato inconsistente (con o sin
+// indicativo de país) — visto con datos reales de
+// `mabalejo89@gmail.com`. Esto puede afectar la tasa de match del Grupo
+// SMS y queda pendiente de definir cómo normalizar.
+//
+// No se pudo probar este rediseño end-to-end en producción desde este
+// entorno (sin credenciales de Metabase de producción); solo se validó
+// la consulta candidata contra datos reales vía el conector de
+// desarrollo, como arriba.
 //
 // El Grupo Control (`fetchConversionsFromWarehouse`, cruce directo por
 // email contra `silver.sales.email`) NO cambia: Hermes sigue yendo a
@@ -87,32 +138,21 @@ const CUSTOMERS_TABLE = 'silver.customers';
 const REVENUE_COLUMN = 'gmv_usd';
 
 // Tamaño máximo de emails/teléfonos por consulta al MCP de Metabase — ver
-// nota "FIX 413 PAYLOAD TOO LARGE" arriba. Válido para consultas
-// AGREGADAS (siempre devuelven 1 sola fila, sin importar cuántos valores
-// tenga el IN) como buildEmailSalesQuery/buildSalesByCustomerIdsQuery.
+// nota "FIX 413 PAYLOAD TOO LARGE" arriba. Para buildEmailSalesQuery
+// (agregada, 1 fila) esto es el único límite relevante. Para
+// buildCombinedSalesQuery (devuelve filas, ver "REDISEÑO DE RENDIMIENTO")
+// también se usa como umbral para decidir si hace falta trocear
+// emails/phones en más de una consulta.
 const BATCH_SIZE = 800;
-// customer_id son bigint cortos (ej. "1048576"): un lote mucho más grande
-// que BATCH_SIZE sigue muy por debajo del límite de payload medido —
-// también es una consulta agregada (1 fila), no está sujeto al límite de
-// row_limit de abajo.
-const CUSTOMER_ID_BATCH_SIZE = 3000;
 
 // Límite REAL de `row_limit` del servidor MCP de Metabase en producción,
-// descubierto en la sesión "ERROR AL BUSCAR EN HUBSPOT Y METABASE" al
-// probar el cruce combinado del Grupo SMS:
+// descubierto en la sesión "ERROR AL BUSCAR EN HUBSPOT Y METABASE":
 //   "Invalid row_limit parameter: 800. Must be between 1 and 500."
-// A diferencia de las consultas agregadas de arriba (siempre 1 fila,
-// nunca chocan con este límite), `collectMatchedCustomerIds` pide UNA
-// FILA POR customer_id que matchea — con emails/teléfonos reales, un
-// lote de 800 valores puede devolver más de 500 customer_id distintos, lo
-// que además de violar el límite del servidor truncaría el resultado sin
-// avisar. Por eso esas consultas usan un lote más chico
-// (CUSTOMER_LOOKUP_BATCH_SIZE), acotado también por este límite de filas.
+// A diferencia de una consulta agregada (siempre 1 fila, nunca choca con
+// este límite), fetchConversionsFromWarehouseCombined pide filas
+// individuales de venta (ver "REDISEÑO DE RENDIMIENTO") y por eso está
+// sujeta a este tope — ver el riesgo aceptado documentado ahí.
 const MAX_ROW_LIMIT = 500;
-// Lote para las consultas de "resolver customer_id por email/teléfono"
-// (collectMatchedCustomerIds): igual al límite de filas del servidor,
-// para que un lote nunca pueda devolver más filas de las que puede pedir.
-const CUSTOMER_LOOKUP_BATCH_SIZE = MAX_ROW_LIMIT;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Un teléfono ya limpio (ver src/agents/eter/utils/cleanPhoneNumber.js)
@@ -213,41 +253,28 @@ function buildEmailSalesQuery({ emails, businessUnit, sendDate }) {
   `.trim();
 }
 
-/** Resuelve customer_id de silver.customers cuyo email esté en el lote dado. */
-function buildCustomersByEmailQuery({ emails, businessUnit }) {
-  const emailList = emails.map(sqlStringLiteral).join(', ');
-  return `
-    select distinct customer_id
-    from ${CUSTOMERS_TABLE}
-    where business_unit = ${sqlStringLiteral(businessUnit)}
-      and email in (${emailList})
-  `.trim();
-}
-
-/** Resuelve customer_id de silver.customers cuyo phone esté en el lote dado. */
-function buildCustomersByPhoneQuery({ phones, businessUnit }) {
-  const phoneList = phones.map(sqlStringLiteral).join(', ');
-  return `
-    select distinct customer_id
-    from ${CUSTOMERS_TABLE}
-    where business_unit = ${sqlStringLiteral(businessUnit)}
-      and phone in (${phoneList})
-  `.trim();
-}
-
-/** Agrega conversions/total_sales de silver.sales para un lote de customer_id ya resueltos. */
-function buildSalesByCustomerIdsQuery({ customerIds, businessUnit, sendDate }) {
-  const idList = customerIds.join(', '); // bigint: no necesitan sqlStringLiteral
+/** Construye la consulta combinada email/phone contra silver.sales JOIN silver.customers — ver "REDISEÑO DE RENDIMIENTO". */
+function buildCombinedSalesQuery({ emails, phones, businessUnit, sendDate }) {
   const { startDate, endDateExclusive } = attributionWindow(sendDate);
   const businessUnitLiteral = sqlStringLiteral(businessUnit);
 
+  // OR de email/teléfono, pero SIEMPRE arrancando el join desde
+  // silver.sales ya filtrada por fecha/país/estado (ver la nota grande
+  // más abajo, "REDISEÑO DE RENDIMIENTO") — nunca desde silver.customers
+  // sin acotar, que es lo que causaba los 502/timeout.
+  const matchClauses = [];
+  if (emails.length > 0) matchClauses.push(`c.email in (${emails.map(sqlStringLiteral).join(', ')})`);
+  if (phones.length > 0) matchClauses.push(`c.phone in (${phones.map(sqlStringLiteral).join(', ')})`);
+  // Nunca debería llamarse con las dos listas vacías (los callers ya lo
+  // validan), pero por seguridad un match imposible es mejor que SQL roto.
+  const matchClause = matchClauses.length > 0 ? matchClauses.join(' or ') : 'false';
+
   return `
-    select
-      count(distinct sale_id) as conversions,
-      coalesce(sum(${REVENUE_COLUMN}), 0) as total_sales
-    from ${SALES_TABLE}
-    where customer_id in (${idList})
-      and ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral }).trim()}
+    select s.sale_id as sale_id, s.${REVENUE_COLUMN} as revenue
+    from ${SALES_TABLE} s
+    join ${CUSTOMERS_TABLE} c on c.customer_id = s.customer_id
+    where ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral }).trim()}
+      and (${matchClause})
   `.trim();
 }
 
@@ -259,11 +286,11 @@ function buildSalesByCustomerIdsQuery({ customerIds, businessUnit, sendDate }) {
  *
  * Corrección (sesión "NUEVO ERROR — Respuesta del servidor MCP de
  * Metabase sin cuerpo utilizable"): el cruce combinado del Grupo SMS
- * (ADR 0009) hace varias llamadas SECUENCIALES al MCP para resolver
- * `customer_id` por lotes (`collectMatchedCustomerIds`) antes de agregar
- * ventas — con un segmento de HubSpot o un CSV grandes, la suma de esas
- * llamadas puede acercarse al límite de ejecución de una función
- * serverless de Vercel (ver el riesgo ya documentado en ADR 0006,
+ * (ver "REDISEÑO DE RENDIMIENTO" más arriba para el diseño actual) puede
+ * hacer varias llamadas EN PARALELO al MCP por lotes — con un segmento de
+ * HubSpot o un CSV grandes, la suma de esas llamadas puede acercarse al
+ * límite de ejecución de una función serverless de Vercel (ver el riesgo
+ * ya documentado en ADR 0006,
  * "Riesgo a vigilar"), y el gateway puede cortar la conexión a mitad de
  * la respuesta SSE o devolver un body vacío/truncado — antes esto se
  * reportaba con un mensaje genérico que no dejaba ver la causa. Ahora:
@@ -405,8 +432,8 @@ export async function fetchConversionsFromWarehouse({ emails, businessUnit, send
   }
   assertBusinessUnitAndDate(businessUnit, sendDate);
 
-  // En paralelo (mismo motivo que collectMatchedCustomerIds/
-  // aggregateSalesForCustomerIds — ver esa nota): mitiga el riesgo, ya
+  // En paralelo (mismo motivo que fetchConversionsFromWarehouseCombined
+  // más abajo — ver esa nota): mitiga el riesgo, ya
   // documentado en ADR 0006, de que muchos lotes secuenciales se acerquen
   // al límite de ejecución de una función serverless de Vercel.
   const batchResults = await Promise.all(
@@ -426,76 +453,22 @@ export async function fetchConversionsFromWarehouse({ emails, businessUnit, send
 }
 
 /**
- * Resuelve, deduplicados, los `customer_id` de silver.customers cuyo
- * email esté en `emails` O cuyo phone esté en `phones` (condición OR del
- * negocio, sesión "CORRECCIÓN FASE 2.2"). Se resuelve en dos rondas de
- * lotes independientes (una por email, otra por teléfono) y se deduplica
- * en memoria con un Set — así un cliente que matchee por las dos vías
- * nunca se cuenta dos veces en el agregado de ventas.
- */
-async function collectMatchedCustomerIds({ emails, phones, businessUnit }, config) {
-  // Lotes de CUSTOMER_LOOKUP_BATCH_SIZE (500, no BATCH_SIZE/800): cada
-  // valor de un lote puede matchear un customer_id distinto, así que el
-  // lote de entrada nunca puede ser mayor que el límite de filas que el
-  // servidor deja pedir — ver nota de MAX_ROW_LIMIT arriba.
-  //
-  // EN PARALELO, no secuencial (corrección de la sesión "Respuesta del
-  // servidor MCP de Metabase sin cuerpo utilizable"): con un segmento de
-  // HubSpot y/o un CSV grandes, resolver cada lote uno por uno podía sumar
-  // más tiempo del que tolera la función serverless de Vercel antes de
-  // cortar la conexión (ver ADR 0006/0009, riesgo ya documentado). Email
-  // y teléfono son consultas independientes entre sí y entre lotes, así
-  // que se disparan todas a la vez con Promise.all — el volumen esperado
-  // (unos pocos lotes por búsqueda) no satura al servidor MCP.
-  const emailBatchPromises = chunkArray(emails, CUSTOMER_LOOKUP_BATCH_SIZE).map((emailBatch) => {
-    const query = buildCustomersByEmailQuery({ emails: emailBatch, businessUnit });
-    return runRowsQuery(query, config, CUSTOMER_LOOKUP_BATCH_SIZE);
-  });
-  const phoneBatchPromises = chunkArray(phones, CUSTOMER_LOOKUP_BATCH_SIZE).map((phoneBatch) => {
-    const query = buildCustomersByPhoneQuery({ phones: phoneBatch, businessUnit });
-    return runRowsQuery(query, config, CUSTOMER_LOOKUP_BATCH_SIZE);
-  });
-
-  const batchResults = await Promise.all([...emailBatchPromises, ...phoneBatchPromises]);
-
-  const ids = new Set();
-  for (const rows of batchResults) {
-    for (const row of rows) {
-      if (row?.customer_id != null) ids.add(String(row.customer_id));
-    }
-  }
-  return Array.from(ids);
-}
-
-/** Agrega conversions/totalSales de silver.sales para un array (ya deduplicado) de customer_id. */
-async function aggregateSalesForCustomerIds({ customerIds, businessUnit, sendDate }, config) {
-  if (customerIds.length === 0) return { conversions: 0, totalSales: 0 };
-
-  // En paralelo por el mismo motivo que collectMatchedCustomerIds arriba
-  // — cada lote de customer_id es una consulta agregada independiente.
-  const batchResults = await Promise.all(
-    chunkArray(customerIds, CUSTOMER_ID_BATCH_SIZE).map((idBatch) => {
-      const query = buildSalesByCustomerIdsQuery({ customerIds: idBatch, businessUnit, sendDate });
-      return runAggregateQuery(query, config);
-    })
-  );
-
-  let totalConversions = 0;
-  let totalSales = 0;
-  for (const batchResult of batchResults) {
-    totalConversions += batchResult.conversions;
-    totalSales += batchResult.totalSales;
-  }
-  return { conversions: totalConversions, totalSales };
-}
-
-/**
- * Punto de entrada COMBINADO (Grupo SMS, "CORRECCIÓN FASE 2.2"): recibe
- * los emails que Hermes ya trajo de HubSpot para la lista que el usuario
- * escribió en el Grupo SMS Y los `telefonos_validos` que Éter extrajo del
- * CSV de Workingbits para la campaña elegida, y hace el match combinado
- * `(email IN (...) OR phone IN (...))` contra `silver.customers` antes de
- * agregar `silver.sales` — ver `collectMatchedCustomerIds`.
+ * Punto de entrada COMBINADO (Grupo SMS, "CORRECCIÓN FASE 2.2", rediseñado
+ * en la sesión "REDISEÑO DE RENDIMIENTO" — ver nota grande al inicio del
+ * archivo): recibe los emails que Hermes ya trajo de HubSpot para la lista
+ * que el usuario escribió en el Grupo SMS Y los `telefonos_validos` que
+ * Éter extrajo del CSV de Workingbits para la campaña elegida, y hace el
+ * match combinado `(email IN (...) OR phone IN (...))` SIEMPRE arrancando
+ * desde `silver.sales` ya acotada por fecha/país/estado — ver
+ * `buildCombinedSalesQuery`. Ya NO resuelve `customer_id` en una fase
+ * separada contra `silver.customers` sin acotar (ese diseño de dos fases,
+ * de ADR 0009, causaba 502/Terminated por escanear una tabla de millones
+ * de filas sin ningún filtro de fecha).
+ *
+ * Deduplica por `sale_id` (no por `customer_id`) usando un Map en memoria:
+ * si el mismo cliente matchea por email Y por teléfono en distintos lotes,
+ * la misma venta puede aparecer más de una vez entre los resultados de los
+ * distintos lotes, y el Map se encarga de contarla una sola vez.
  * @param {{emails: string[], phones: string[], businessUnit: string, sendDate: string}} input
  * @returns {Promise<{conversions: number, totalSales: number}>}
  */
@@ -508,6 +481,47 @@ export async function fetchConversionsFromWarehouseCombined({ emails, phones, bu
   }
   assertBusinessUnitAndDate(businessUnit, sendDate);
 
-  const customerIds = await collectMatchedCustomerIds({ emails: cleanEmails, phones: cleanPhones, businessUnit }, config);
-  return aggregateSalesForCustomerIds({ customerIds, businessUnit, sendDate }, config);
+  // Caso común: ambas listas caben juntas en un solo lote (BATCH_SIZE,
+  // límite de payload) — una sola consulta con el OR completo. Caso
+  // grande: se trocea cada lista POR SEPARADO (cada query solo lleva UNA
+  // de las dos condiciones) para no armar un IN gigante que exceda el
+  // límite de payload; el dedupe por sale_id de abajo evita doble conteo
+  // si una misma venta aparece en más de un lote.
+  const totalCount = cleanEmails.length + cleanPhones.length;
+  const queries = [];
+  if (totalCount <= BATCH_SIZE) {
+    queries.push(buildCombinedSalesQuery({ emails: cleanEmails, phones: cleanPhones, businessUnit, sendDate }));
+  } else {
+    for (const emailBatch of chunkArray(cleanEmails, BATCH_SIZE)) {
+      queries.push(buildCombinedSalesQuery({ emails: emailBatch, phones: [], businessUnit, sendDate }));
+    }
+    for (const phoneBatch of chunkArray(cleanPhones, BATCH_SIZE)) {
+      queries.push(buildCombinedSalesQuery({ emails: [], phones: phoneBatch, businessUnit, sendDate }));
+    }
+  }
+
+  // En paralelo (mismo motivo documentado en fetchConversionsFromWarehouse
+  // arriba): cada lote es independiente, y disparar todos a la vez evita
+  // acercarse al límite de ejecución de la función serverless.
+  //
+  // Riesgo aceptado y documentado (ver "REDISEÑO DE RENDIMIENTO"): a
+  // diferencia de una consulta agregada (siempre 1 fila), esto pide filas
+  // individuales de venta, sujeto a MAX_ROW_LIMIT (500) por lote. Si un
+  // solo lote matchea más de 500 ventas distintas en la ventana de 7 días,
+  // el resultado se trunca sin avisar. Se considera improbable para
+  // volúmenes típicos de conversión de una campaña de SMS en 7 días, pero
+  // queda como limitación conocida a vigilar si el volumen crece.
+  const batchRowSets = await Promise.all(queries.map((q) => runRowsQuery(q, config, MAX_ROW_LIMIT)));
+
+  const salesById = new Map(); // dedupe por sale_id — evita doble conteo entre lotes
+  for (const rows of batchRowSets) {
+    for (const row of rows) {
+      if (row?.sale_id == null) continue;
+      salesById.set(String(row.sale_id), Number(row.revenue) || 0);
+    }
+  }
+
+  let totalSales = 0;
+  for (const revenue of salesById.values()) totalSales += revenue;
+  return { conversions: salesById.size, totalSales };
 }
