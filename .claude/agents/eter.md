@@ -74,6 +74,14 @@ conversiones (Hermes).
   cualquier valor no reconocido — incluido el caso ambiguo de Brasil sin prefijo `NL_`/`LV_` en
   `Communication Name` — cae a un modal de confirmación manual en vez de asignar un país adivinado.
   Confirmar con un CSV real que estas dos columnas existen con esos nombres exactos.
+- CONFIRMADO en Fase 2.4 (sesión "CORRECCIÓN FASE 2.4 — DEBUGGING DE UI Y PARSEO DE DATOS", QA contra
+  base de datos real): las fechas de Workingbits (`Send At`, `Communication Start Date`) SÍ vienen en
+  `DD/MM/YYYY HH:mm:ss` — ya no es una suposición, está verificado. `parseWorkingbitsDate.js` asume
+  ese formato explícitamente. También se confirmó (y corrigió) un bug real: la resolución de tienda
+  de Brasil (NL/LV) se hacía una sola vez por ARCHIVO en vez de por GRUPO/campaña, asignando mal el
+  país a campañas `NL_` cuando la primera fila del CSV era de una campaña `LV_` (o viceversa) — ver
+  ADR 0013. Ahora se resuelve por grupo en `parseWorkingbitsCsv.js`, nunca heredando el resultado de
+  otro grupo del mismo archivo.
 - Qué hacer con campañas re-subidas con el mismo `Communication Name` (¿reemplazar la fila anterior
   en `sms_processed_campaigns`, o acumular versiones?) — hoy `processedCampaignsService.js`
   reemplaza (upsert por nombre de campaña), documentado como decisión de esta sesión, revisable.

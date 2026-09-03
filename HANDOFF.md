@@ -825,3 +825,43 @@ CSV"), con tres frentes:
 Workingbits para confirmar los nombres exactos de `Country Name`/`Communication Start Date`).
 Pendiente: aplicar migración 005 (después de 003 y 004), subir un CSV real y confirmar detección de
 país/fecha, y reconfirmar que el Grupo SMS ya no da timeouts. Detalle completo en ADR 0012.
+
+### Sesión 2026-09-03, tarde — ADR 0013: CORRECCIÓN FASE 2.4 (debugging de UI y parseo de datos)
+
+QA del usuario contra la base de datos y la UI reales encontró tres fallos en lo implementado en Fase
+2.3 (ADR 0012):
+
+1. **Bug real de Brasil**: `detectCountryFromCsv.js` resolvía NL vs LV UNA SOLA VEZ por archivo
+   (mirando la primera fila), asignando mal el país a campañas mezcladas en un mismo CSV — un archivo
+   con campañas `NL_...` y `LV_...` terminaba con TODAS marcadas como la tienda de la primera fila.
+   **Fix**: la resolución se movió a `parseWorkingbitsCsv.js`, POR GRUPO — cada campaña usa su propio
+   `Communication Name` (`includes('NL_')`/`includes('LV_')`, según instrucción explícita). Grupos sin
+   prefijo reconocible disparan un modal post-parseo pidiendo confirmar la tienda SOLO para esos
+   grupos (`CsvUploadForm.jsx`).
+2. **Bug real de fecha**: el CSV trae `DD/MM/YYYY HH:mm:ss` (confirmado por el usuario contra datos
+   reales) — se guardaba crudo y `parseCsvDate.js` lo interpretaba con `new Date()`, que asume
+   MM/DD/YYYY y daba `Invalid Date` o una fecha invertida. **Fix**: nuevo
+   `src/agents/eter/utils/parseWorkingbitsDate.js` que asume DD/MM/YYYY explícitamente y normaliza a
+   `YYYY-MM-DD` ANTES de guardar. `parseCsvDate.js` (Minerva) ahora también tiene ese mismo branch
+   como capa defensiva, para que campañas ya guardadas con la fecha vieja mal formada también se vean
+   bien sin re-subir el CSV.
+3. **Reversión parcial de ADR 0012**: "País" volvió a ser un `<select>` editable en la Calculadora
+   (el usuario lo elige ANTES de la campaña) y el dropdown de campañas volvió a filtrarse por país —
+   `useCampaignCalculator.js`/`CampaignForm.jsx`. "Fecha de envío" SIGUE ReadOnly (eso no era el bug;
+   con el fix de fecha ya se calcula bien).
+
+Todo documentado con causa raíz en ADR 0013. `node --check` confirma sintaxis válida en los `.js`
+tocados; los `.jsx` se revisaron manualmente (balance de llaves/paréntesis, sin checker disponible).
+
+**Nota operativa de esta sesión**: el bridge al escritorio del usuario se cayó a mitad de la
+corrección — todos los archivos se prepararon y validaron localmente (incluyendo pruebas de
+`parseWorkingbitsDate`/`parseCsvDate` contra casos reales fuera del proyecto) y se entregaron también
+como descarga en el chat antes de poder escribirlos, para no dejar al usuario sin nada mientras se
+esperaba la reconexión. Al reconectar, se escribieron los 9 archivos + ADR 0013 sin cambios respecto
+a lo ya validado.
+
+**No se pudo probar end-to-end en este entorno** (sin `npm run dev`, sin un CSV real de Workingbits
+con campañas NL_/LV_ mezcladas). Pendiente que el usuario: (1) vuelva a subir un CSV con campañas
+mezcladas y confirme que cada una queda con su tienda correcta, (2) confirme que la fecha se
+autocompleta visualmente, (3) confirme que el selector de País vuelve a filtrar el dropdown de
+campañas como se espera.
