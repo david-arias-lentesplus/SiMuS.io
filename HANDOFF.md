@@ -865,3 +865,32 @@ con campañas NL_/LV_ mezcladas). Pendiente que el usuario: (1) vuelva a subir u
 mezcladas y confirme que cada una queda con su tienda correcta, (2) confirme que la fecha se
 autocompleta visualmente, (3) confirme que el selector de País vuelve a filtrar el dropdown de
 campañas como se espera.
+
+## 2026-09-03 — Fase 2.5: Vista de Gestión de Campañas Cargadas (CSV)
+
+Se implementó `/campanas-cargadas` ("Campañas Procesadas"), pedida por el usuario para ver,
+buscar, eliminar y enviar a calcular ROI las campañas que Éter agrupó de un CSV de
+Workingbits (`sms_processed_campaigns`), sin tener que pasar por el `<select>` de la
+Calculadora para verlas. Ver ADR 0014 para el detalle completo. Resumen de los cambios:
+
+- Nueva página `src/agents/hefesto/pages/ProcessedCampaignsPage.jsx` — tarjeta blanca con
+  borde sutil (mismo patrón real de `HistoryPage.jsx`; la instrucción nombraba clases
+  `border-border`/`shadow-shadow` que no existen en `tailwind.config.js` — se usó el patrón
+  real en su lugar), tabla (fecha, campaña, país en badge azul claro, muestra válida,
+  acciones), buscador por nombre de campaña, botones "Calcular ROI" y "Eliminar".
+- Nueva ruta `/campanas-cargadas` en `AppRoutes.jsx` (admin-only) y nuevo ítem en
+  `Sidebar.jsx` ("Campañas Procesadas").
+- `useCampaignStore.js` (Minerva): nuevo `pendingProcessedCampaignId` +
+  `setPendingProcessedCampaignId` + `consumePendingProcessedCampaignId` — puente para que
+  "Calcular ROI" le pase el id de la campaña a la Calculadora sin usar parámetros de URL.
+- `useCampaignCalculator.js` (Minerva): nuevo efecto que consume ese id al montar y
+  preselecciona país + campaña automáticamente.
+- `processedCampaignsService.js` (Deméter): `fetchProcessedCampaigns` ahora ordena por
+  `send_date DESC` (antes `created_at DESC`), como pidió el usuario.
+- `useProcessedCampaigns.js` (Deméter): nuevo `deleteCampaign` (alias de `remove`, mismo
+  comportamiento) para el botón "Eliminar" de la nueva vista.
+
+Todo verificado con `node --check` (los `.js`) y balance de llaves/paréntesis a mano (los
+`.jsx`, sin checker disponible en este entorno). NO se pudo probar contra la base de datos
+real ni la UI corriendo — pendiente que el usuario confirme la vista, el flujo "Calcular
+ROI" y el borrado en la práctica.

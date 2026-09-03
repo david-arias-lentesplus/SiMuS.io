@@ -34,9 +34,26 @@ export function toProcessedCampaignRow(group, fallbackCountryValue) {
   };
 }
 
-/** Lista campañas procesadas, más recientes primero. `countryValue` es opcional (filtra por país). */
+/**
+ * Lista campañas procesadas. `countryValue` es opcional (filtra por país).
+ *
+ * Fase 2.5 ("VISTA DE GESTIÓN DE CAMPAÑAS CARGADAS"): el orden pasa de
+ * `created_at DESC` a `send_date DESC` (lo que pidió el usuario para la
+ * nueva vista /campanas-cargadas — quiere ver primero las campañas cuyo
+ * envío es más reciente, no las cargadas/subidas más recientemente, que
+ * no es lo mismo si alguien sube un CSV viejo después). `send_date` es
+ * texto en formato `YYYY-MM-DD` desde el fix de Éter (Fase 2.4,
+ * parseWorkingbitsDate.js), así que el orden lexicográfico coincide con
+ * el cronológico; se agrega `created_at DESC` como desempate estable para
+ * filas con `send_date` nulo o igual (nullsFirst:false para que esas
+ * filas no salten al principio de la lista).
+ */
 export async function fetchProcessedCampaigns({ countryValue } = {}) {
-  let query = supabase.from(TABLE).select('*').order('created_at', { ascending: false });
+  let query = supabase
+    .from(TABLE)
+    .select('*')
+    .order('send_date', { ascending: false, nullsFirst: false })
+    .order('created_at', { ascending: false });
   if (countryValue) query = query.eq('country_value', countryValue);
   const { data, error } = await query;
   if (error) throw error;

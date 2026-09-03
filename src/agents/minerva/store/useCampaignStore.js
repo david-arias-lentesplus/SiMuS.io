@@ -40,4 +40,17 @@ export const useCampaignStore = create((set) => ({
   selectedCampaignId: null,
   selectCampaign: (id) => set({ selectedCampaignId: id }),
   clearSelection: () => set({ selectedCampaignId: null }),
+
+  // --- Puente "Calcular ROI" (Fase 2.5, VISTA DE GESTIÓN DE CAMPAÑAS
+  // CARGADAS) ---
+  // No confundir con `selectedCampaignId` de arriba: ese es un id de
+  // `sms_campaigns` (campaña YA calculada/guardada, histórico). Este es
+  // un id de `sms_processed_campaigns` (campaña CSV de Éter, sin
+  // calcular todavía) que /campanas-cargadas deja acá al pulsar
+  // "Calcular ROI", para que useCampaignCalculator.js (Minerva) lo
+  // recoja al montar la Calculadora y preseleccione país + campaña — ver
+  // ese hook para el consumo y limpieza de este valor.
+  pendingProcessedCampaignId: null,
+  setPendingProcessedCampaignId: (id) => set({ pendingProcessedCampaignId: id }),
+  consumePendingProcessedCampaignId: () => set({ pendingProcessedCampaignId: null }),
 }));

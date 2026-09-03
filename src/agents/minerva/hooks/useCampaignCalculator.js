@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useFilteredCampaigns } from './useFilteredCampaigns.js';
 import { useCountriesConfig } from '../../demeter/hooks/useCountriesConfig.js';
 import { useProcessedCampaigns } from '../../demeter/hooks/useProcessedCampaigns.js';
+import { useCampaignStore } from '../store/useCampaignStore.js';
 import { COUNTRIES as STATIC_COUNTRIES_FALLBACK } from '../constants/countries.js';
 import { EVENT_TYPES, detectEventType } from '../utils/detectEventType.js';
 import { fetchSegmentFromHubSpot } from '../utils/fetchSegmentFromHubSpot.js';
@@ -123,7 +124,15 @@ export function useCampaignCalculator() {
   // `sms_processed_campaigns.country_value` guarda el `value` del
   // catálogo ESTÁTICO histórico (ej. 'colombia'), no necesariamente el
   // uuid de countries_config, así que el filtro compara contra ambos.
-  const { campaigns: processedCampaigns, loading: processedCampaignsLoading } = useProcessedCampaigns();
+  const { campaigns: allProcessedCampaigns, loading: processedCampaignsLoading } = useProcessedCampaigns();
+
+  // Fase 2.5 ("VISTA DE GESTIÓN DE CAMPAÑAS CARGADAS"): id de
+  // sms_processed_campaigns dejado por /campanas-cargadas al pulsar
+  // "Calcular ROI" (ver useCampaignStore.js). Se consume una sola vez
+  // más abajo, en cuanto el catálogo de países y las campañas ya
+  // cargaron.
+  const pendingProcessedCampaignId = useCampaignStore((s) => s.pendingProcessedCampaignId);
+  const consumePendingProcessedCampaignId = useCampaignStore((s) => s.consumePendingProcessedCampaignId);
 
   const country = useMemo(
     () => countries.find((c) => c.value === form.countryValue) ?? countries[0] ?? { label: '', costPerSms: 0, businessUnit: '' },
@@ -138,8 +147,8 @@ export function useCampaignCalculator() {
   const availableProcessedCampaigns = useMemo(() => {
     if (!country?.businessUnit) return [];
     const staticValue = STATIC_COUNTRIES_FALLBACK.find((c) => c.businessUnit === country.businessUnit)?.value;
-    return processedCampaigns.filter((pc) => pc.country_value === staticValue || pc.country_value === form.countryValue);
-  }, [processedCampaigns, country, form.countryValue]);
+    return allProcessedCampaigns.filter((pc) => pc.country_value === staticValue || pc.country_value === form.countryValue);
+  }, [allProcessedCampaigns, country, form.countryValue]);
 
   const selectedProcessedCampaign = useMemo(
     () => availableProcessedCampaigns.find((pc) => pc.id === form.processedCampaignId) ?? null,
@@ -229,6 +238,55 @@ export function useCampaignCalculator() {
     setReport(null);
     setApproval(IDLE_APPROVAL);
   }
+
+  /**
+   * Fase 2.5 ("VISTA DE GESTIÓN DE CAMPAÑAS CARGADAS"): si
+   * /campanas-cargadas dejó un `pendingProcessedCampaignId` en el store
+   * (botón "Calcular ROI"), se busca esa campaña en la lista SIN
+   * filtrar por país (`allProcessedCampaigns` — la campaña puede ser de
+   * cualquier país, no necesariamente el que esté elegido ahora mismo
+   * en el formulario) y se completan país + campaña + fecha/mensaje/tipo
+   * de evento/tamaño de muestra en un solo `setForm`, en vez de llamar a
+   * `setCountryValue()` seguido de `selectProcessedCampaign()` — esas dos
+   * funciones actúan sobre `availableProcessedCampaigns` (ya filtrada
+   * por el país ANTERIOR) y sobre el estado de un render anterior, así
+   * que encadenarlas acá arrastraría una condición de carrera (el filtro
+   * por país nuevo todavía no habría corrido cuando se intenta elegir la
+   * campaña). Se resuelve el país de la campaña puenteando por
+   * `country_value` igual que hace `availableProcessedCampaigns` arriba
+   * (puede venir como el `value` estático histórico o como el id de
+   * countries_config).
+   */
+  useEffect(() => {
+    if (!pendingProcessedCampaignId) return;
+    if (processedCampaignsLoading || countries.length === 0) return;
+
+    const campaign = allProcessedCampaigns.find((pc) => pc.id === pendingProcessedCampaignId);
+    consumePendingProcessedCampaignId(); // se consume una sola vez, exista o no la campaña
+    if (!campaign) return;
+
+    const directMatch = countries.find((c) => c.value === campaign.country_value);
+    const staticEntry = STATIC_COUNTRIES_FALLBACK.find((c) => c.value === campaign.country_value);
+    const bridgedMatch = staticEntry ? countries.find((c) => c.businessUnit === staticEntry.businessUnit) : null;
+    const matchedCountry = directMatch ?? bridgedMatch ?? countries[0];
+
+    setEventTypeTouched(false);
+    setForm((f) => ({
+      ...f,
+      countryValue: matchedCountry.value,
+      processedCampaignId: campaign.id,
+      name: campaign.campaign_name,
+      sendDate: parseCsvDate(campaign.communication_start_date || campaign.send_date),
+      message: campaign.message || '',
+      eventType: detectEventType(campaign.campaign_name),
+      smsN: String(campaign.muestra_entregados ?? 0),
+      smsC: '',
+      smsS: '',
+    }));
+    setSmsSearch(IDLE_SEARCH);
+    setReport(null);
+    setApproval(IDLE_APPROVAL);
+  }, [pendingProcessedCampaignId, processedCampaignsLoading, allProcessedCampaigns, countries, consumePendingProcessedCampaignId]);
 
   /**
    * Grupo SMS (corrección de Fase 2.2, ver ADR 0009): busca el segmento

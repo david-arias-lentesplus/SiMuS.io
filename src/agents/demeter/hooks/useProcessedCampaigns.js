@@ -43,5 +43,13 @@ export function useProcessedCampaigns({ countryValue } = {}) {
     setCampaigns((prev) => prev.filter((c) => c.id !== id));
   }, []);
 
-  return { campaigns, loading, error, reload, save, remove };
+  // Fase 2.5 ("VISTA DE GESTIÓN DE CAMPAÑAS CARGADAS"): la instrucción
+  // pidió explícitamente una función `deleteCampaign(id)` para el botón
+  // "Eliminar" de /campanas-cargadas. Es un alias de `remove` (mismo
+  // comportamiento, ya usado por /upload para otros fines) — se
+  // mantienen los dos nombres para no romper el consumidor existente de
+  // CsvUploadForm.jsx.
+  const deleteCampaign = remove;
+
+  return { campaigns, loading, error, reload, save, remove, deleteCampaign };
 }

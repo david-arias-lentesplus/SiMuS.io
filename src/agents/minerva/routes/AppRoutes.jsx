@@ -6,6 +6,7 @@ import LoginPage from '../../hefesto/pages/LoginPage.jsx';
 import CountriesSettingsPage from '../../hefesto/pages/settings/CountriesSettingsPage.jsx';
 import UsersSettingsPage from '../../hefesto/pages/settings/UsersSettingsPage.jsx';
 import UploadPage from '../../hefesto/pages/UploadPage.jsx';
+import ProcessedCampaignsPage from '../../hefesto/pages/ProcessedCampaignsPage.jsx';
 import RequireAuth from './RequireAuth.jsx';
 import RequireAdmin from './RequireAdmin.jsx';
 
@@ -21,6 +22,12 @@ import RequireAdmin from './RequireAdmin.jsx';
 // Pivote de Fase 2.1 (ADR 0008): se agregó /upload (carga de CSV de
 // Workingbits), también admin-only por el mismo criterio que
 // /calculadora — cargar campañas nuevas es una acción de escritura.
+//
+// Fase 2.5 ("VISTA DE GESTIÓN DE CAMPAÑAS CARGADAS"): se agregó
+// /campanas-cargadas (gestión de las campañas que Éter agrupó del CSV,
+// antes de calcular ROI) — admin-only por el mismo criterio que /upload:
+// eliminar una campaña cargada por error es también una acción de
+// escritura destructiva.
 export default function AppRoutes() {
   return (
     <Routes>
@@ -49,6 +56,16 @@ export default function AppRoutes() {
           <RequireAuth>
             <RequireAdmin>
               <UploadPage />
+            </RequireAdmin>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/campanas-cargadas"
+        element={
+          <RequireAuth>
+            <RequireAdmin>
+              <ProcessedCampaignsPage />
             </RequireAdmin>
           </RequireAuth>
         }
