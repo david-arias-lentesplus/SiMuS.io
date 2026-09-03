@@ -28,7 +28,7 @@ create table if not exists public.sms_processed_campaigns (
   telefonos_validos   jsonb not null default '[]'::jsonb, -- array de teléfonos limpios (sin indicativo)
   total_rows          integer not null default 0 check (total_rows >= 0), -- filas totales del CSV para esta campaña (auditoría)
 
-  constraint sms_processed_campaigns_unique_name_country unique (campaign_name, country_value)
+  constraint sms_processed_campaigns_unique_name_country unique (campaign_name, country_value) -- CORREGIDO en la migración 004: el identificador único de negocio pasa a ser solo campaign_name (ver ADR 0009)
 );
 
 comment on table public.sms_processed_campaigns is

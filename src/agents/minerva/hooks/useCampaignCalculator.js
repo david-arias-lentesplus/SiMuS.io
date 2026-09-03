@@ -6,7 +6,7 @@ import { COUNTRIES as STATIC_COUNTRIES_FALLBACK } from '../constants/countries.j
 import { EVENT_TYPES, detectEventType } from '../utils/detectEventType.js';
 import { fetchSegmentFromHubSpot } from '../utils/fetchSegmentFromHubSpot.js';
 import { fetchConversionsFromMetabase } from '../utils/fetchConversionsFromMetabase.js';
-import { fetchConversionsByPhoneFromMetabase } from '../utils/fetchConversionsByPhoneFromMetabase.js';
+import { fetchConversionsForSmsGroup } from '../utils/fetchConversionsForSmsGroup.js';
 import { parseCsvDate } from '../utils/parseCsvDate.js';
 import { computeMetrics } from '../utils/computeMetrics.js';
 import { round2 } from '../../hefesto/utils/format.js';
@@ -24,11 +24,20 @@ import { round2 } from '../../hefesto/utils/format.js';
 // useProcessedCampaigns, Deméter). Al elegirla se autocompletan fecha,
 // mensaje, tipo de evento y el tamaño de muestra REAL del Grupo SMS
 // (`muestra_entregados`, ahora un campo ReadOnly — ver CampaignForm.jsx).
-// El botón "Buscar" del Grupo SMS ya no consulta HubSpot: cruza
-// directamente `telefonos_validos` de la campaña elegida contra Metabase
-// (ver fetchConversionsByPhoneFromMetabase.js). El Grupo Control NO
-// cambió en este pivote — sigue buscando un segmento de HubSpot por
-// nombre, igual que antes (ver ADR 0008 para por qué se dejó así).
+//
+// Corrección de Fase 2.2 (ver ADR 0009): el pivote de Fase 2.1 había
+// quitado por completo la búsqueda de HubSpot del Grupo SMS. El usuario
+// corrigió eso — el CSV de Workingbits solo trae teléfonos, pero
+// TAMBIÉN se necesitan los emails de esa lista en HubSpot para el mejor
+// cruce posible contra Metabase. El campo "Nombre exacto de la lista en
+// HubSpot" + botón "Buscar" VUELVEN para el Grupo SMS (además de para el
+// Grupo Control, que nunca los perdió): `searchSmsGroup()` ahora busca el
+// segmento en HubSpot (`fetchSegmentFromHubSpot`) y cruza sus emails
+// JUNTO CON `telefonos_validos` de la campaña elegida vía
+// `fetchConversionsForSmsGroup` (Hermes hace `email OR phone` contra
+// Metabase). El tamaño de muestra del Grupo SMS SIGUE siendo
+// `muestra_entregados` (ReadOnly) — HubSpot en este flujo solo aporta
+// emails para el cruce, nunca redefine el tamaño de muestra.
 //
 // Las dos acciones del flujo se mantienen sin cambios:
 //   1. calculate()      -> SOLO calcula en memoria (computeMetrics), NUNCA
@@ -44,7 +53,8 @@ const EMPTY_FORM = {
   countryValue: '', // se completa solo con el primer país que cargue useCountriesConfig
   eventType: EVENT_TYPES[0],
   message: '',
-  smsN: '',   // ahora ReadOnly: viene de muestra_entregados de la campaña elegida
+  smsSegmentName: '', // Fase 2.2: vuelve — nombre de lista de HubSpot para el Grupo SMS
+  smsN: '',   // ReadOnly: viene de muestra_entregados de la campaña elegida (nunca de HubSpot)
   smsC: '',
   smsS: '',
   ctrlSegmentName: '',
@@ -162,6 +172,9 @@ export function useCampaignCalculator() {
       smsN: String(campaign.muestra_entregados ?? 0),
       smsC: '',
       smsS: '',
+      // smsSegmentName NO se limpia a propósito: el nombre de la lista de
+      // HubSpot suele ser el mismo entre campañas de un mismo flujo de
+      // trabajo (Fase 2.2) — el usuario puede sobreescribirlo a mano.
     }));
     setSmsSearch(IDLE_SEARCH);
     setReport(null);
@@ -169,15 +182,24 @@ export function useCampaignCalculator() {
   }
 
   /**
-   * Grupo SMS (Fase 2.1): cruza `telefonos_validos` de la campaña elegida
-   * directamente contra Metabase — ya NO busca ningún segmento en
-   * HubSpot (ver ADR 0008). Requiere campaña elegida + fecha de envío
-   * (siempre viene autocompletada al elegir la campaña, pero el usuario
-   * puede editarla si el CSV traía una fecha rara — ver parseCsvDate.js).
+   * Grupo SMS (corrección de Fase 2.2, ver ADR 0009): busca el segmento
+   * de HubSpot que el usuario escribió (mismo mecanismo que el Grupo
+   * Control) para obtener sus emails, y los cruza JUNTO CON
+   * `telefonos_validos` de la campaña elegida contra Metabase — Hermes
+   * hace el match `(email OR phone)` en una sola llamada (ver
+   * fetchConversionsForSmsGroup.js). El tamaño de muestra (`smsN`) NO se
+   * toca acá: sigue siendo `muestra_entregados`, ReadOnly, tomado al
+   * elegir la campaña — HubSpot en este flujo solo aporta emails para el
+   * cruce. Requiere campaña elegida + nombre de lista + fecha de envío.
    */
   async function searchSmsGroup() {
     if (!selectedProcessedCampaign) {
       setSmsSearch({ loading: false, error: 'Elige primero una campaña del CSV cargado en /upload.' });
+      return;
+    }
+    const segmentName = form.smsSegmentName.trim();
+    if (!segmentName) {
+      setSmsSearch({ loading: false, error: 'Ingresa el nombre de la lista de HubSpot primero.' });
       return;
     }
     if (!form.sendDate) {
@@ -187,7 +209,10 @@ export function useCampaignCalculator() {
 
     setSmsSearch({ loading: true, error: null });
     try {
-      const { conversions, totalSales } = await fetchConversionsByPhoneFromMetabase({
+      const { contacts } = await fetchSegmentFromHubSpot(segmentName);
+      const emails = contacts.map((c) => c.email).filter(Boolean);
+      const { conversions, totalSales } = await fetchConversionsForSmsGroup({
+        emails,
         phones: selectedProcessedCampaign.telefonos_validos ?? [],
         businessUnit: country.businessUnit,
         sendDate: form.sendDate,

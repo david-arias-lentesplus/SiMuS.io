@@ -1,6 +1,6 @@
 import {
   fetchConversionsFromWarehouse,
-  fetchConversionsFromWarehouseByPhone,
+  fetchConversionsFromWarehouseCombined,
   MetabaseApiError,
 } from '../../src/agents/hermes/services/metabaseService.js';
 
@@ -8,15 +8,17 @@ import {
 // lo exige Vercel para detectar Serverless Functions en un proyecto Vite;
 // la lógica real vive en src/agents/hermes/services/metabaseService.js.
 //
-// Pivote de Fase 2.1: esta ruta ahora acepta DOS formas de payload,
-// mutuamente excluyentes:
-//   - { emails, businessUnit, sendDate }  -> cruce por email (Grupo Control,
-//     sigue viniendo de src/agents/minerva/utils/fetchConversionsFromMetabase.js).
-//   - { phones, businessUnit, sendDate }  -> cruce por teléfono (Grupo SMS,
-//     viene de src/agents/minerva/utils/fetchConversionsByPhoneFromMetabase.js,
-//     con los `telefonos_validos` que Éter extrajo del CSV de Workingbits).
-// Nunca se aceptan ambas a la vez ni ninguna de las dos — se responde 400
-// para dejar el contrato explícito en vez de adivinar cuál usar.
+// Corrección de Fase 2.2 ("RESTAURACIÓN DE HUBSPOT Y MANEJO DE
+// DUPLICADOS"): esta ruta acepta dos formas de payload, distinguidas por
+// la presencia de "phones":
+//   - { emails, businessUnit, sendDate }          -> Grupo Control: cruce
+//     directo por email contra silver.sales (sin cambios desde ADR 0006).
+//   - { emails, phones, businessUnit, sendDate }  -> Grupo SMS: cruce
+//     combinado (email O teléfono) vía silver.customers -> silver.sales
+//     (ver fetchConversionsFromWarehouseCombined). "emails" puede venir
+//     vacío en este modo si el usuario no encontró una lista de HubSpot,
+//     pero "phones" es lo que dispara este modo — así el Grupo SMS sigue
+//     funcionando aunque HubSpot no devuelva nada.
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -24,12 +26,12 @@ export default async function handler(req, res) {
   }
 
   const { emails, phones, businessUnit, sendDate } = req.body ?? {};
-  const hasEmails = Array.isArray(emails);
   const hasPhones = Array.isArray(phones);
+  const hasEmails = Array.isArray(emails);
 
-  if (hasEmails === hasPhones) {
+  if (!hasPhones && !hasEmails) {
     return res.status(400).json({
-      error: 'Debes enviar exactamente uno de los dos: "emails" (array) o "phones" (array), nunca ambos ni ninguno.',
+      error: 'Debes enviar "emails" (Grupo Control) o "emails" + "phones" (Grupo SMS), como arrays.',
     });
   }
   if (!businessUnit || typeof businessUnit !== 'string') {
@@ -40,9 +42,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    const result = hasEmails
-      ? await fetchConversionsFromWarehouse({ emails, businessUnit, sendDate })
-      : await fetchConversionsFromWarehouseByPhone({ phones, businessUnit, sendDate });
+    const result = hasPhones
+      ? await fetchConversionsFromWarehouseCombined({ emails: hasEmails ? emails : [], phones, businessUnit, sendDate })
+      : await fetchConversionsFromWarehouse({ emails, businessUnit, sendDate });
     return res.status(200).json(result);
   } catch (err) {
     const status = err instanceof MetabaseApiError && Number.isInteger(err.status) ? err.status : 502;

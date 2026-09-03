@@ -29,18 +29,27 @@ export async function fetchProcessedCampaigns({ countryValue } = {}) {
 }
 
 /**
- * Inserta (o reemplaza, si ya existe una campaña con el mismo nombre +
- * país) el lote de campañas que Éter agrupó de un CSV. Decisión de esta
- * sesión (documentada en .claude/agents/eter.md, "Pendiente de definir"):
- * volver a subir un CSV que incluya una campaña ya cargada REEMPLAZA esa
- * fila (upsert por `campaign_name, country_value`), no acumula duplicados.
+ * Inserta (o reemplaza, si ya existe una campaña con el mismo
+ * `campaign_name`) el lote de campañas que Éter agrupó de un CSV.
+ *
+ * Corrección de Fase 2.2 ("MANEJO DE DUPLICADOS", ver ADR 0009 y la
+ * migración 004): el identificador único de negocio es SOLO
+ * `campaign_name` (el `Communication Name` del CSV) — no
+ * `(campaign_name, country_value)` como se implementó por error en la
+ * migración 003. Volver a subir un CSV con una campaña ya cargada
+ * SOBREESCRIBE `muestra_entregados`, `telefonos_validos`, `send_date`,
+ * `message` y `total_rows` de esa fila (incluida `country_value`, si el
+ * usuario subió el CSV bajo un país distinto por error) en vez de crear
+ * un duplicado. Postgres/PostgREST no distingue "la data es exactamente
+ * igual" de "cambió" en un upsert — si no cambió nada, sobreescribe con
+ * los mismos valores, lo cual es inofensivo (no es un insert nuevo).
  */
 export async function upsertProcessedCampaigns(groups, countryValue) {
   if (!Array.isArray(groups) || groups.length === 0) return [];
   const rows = groups.map((g) => toProcessedCampaignRow(g, countryValue));
   const { data, error } = await supabase
     .from(TABLE)
-    .upsert(rows, { onConflict: 'campaign_name,country_value' })
+    .upsert(rows, { onConflict: 'campaign_name' })
     .select();
   if (error) throw error;
   return data;

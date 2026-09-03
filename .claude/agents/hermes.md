@@ -69,6 +69,14 @@ ya no busca un segmento en HubSpot (ver ADR 0008 y `.claude/agents/eter.md`) —
 `silver.customers.phone`). `/api/metabase/conversions.js` acepta `emails` O `phones`. El Grupo
 Control sigue sin cambios (email vía HubSpot).
 
+## Corrección de Fase 2.2 (sesión 2026-09-03, tarde) — cruce combinado email + teléfono
+
+`fetchConversionsFromWarehouseByPhone()` (solo-teléfono) se reemplazó por
+`fetchConversionsFromWarehouseCombined()`: el Grupo SMS necesita HubSpot otra vez (para los emails de
+la lista) además de `telefonos_validos` del CSV — el cruce real contra Metabase ahora es
+`(customers.email IN (...) OR customers.phone IN (...))`, resuelto en dos fases (IDs de cliente,
+después ventas) para respetar el límite de payload del servidor MCP. Ver ADR 0009.
+
 ## Pendiente de definir
 - ~~Método de autenticación exacto~~ — Resuelto en ADR 0004: Private App Token (`HS_PAT`), vía
   proxy serverless.

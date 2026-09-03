@@ -606,3 +606,29 @@ razonable, documentadas como heurísticas a validar con el primer CSV real que e
 4. Deploy en Vercel + verificación end-to-end del flujo completo (subir CSV -> elegir campaña en la
    Calculadora -> Buscar -> Calcular -> Aprobar y Guardar), no se pudo probar desde este entorno
    (misma limitación de siempre, ver sección de `npm run dev`/`vercel dev` más arriba).
+
+### Sesión 2026-09-03, tarde (corrección de Fase 2.2 — Restauración de HubSpot y manejo de duplicados)
+
+El usuario corrigió dos huecos del pivote de Fase 2.1 (ver ADR 0009):
+
+1. El Grupo SMS de la Calculadora había perdido por completo la búsqueda de HubSpot (Fase 2.1 cruzaba
+   solo por teléfono). El campo "Nombre exacto de la lista en HubSpot" + botón "Buscar" vuelven para
+   el Grupo SMS: `useCampaignCalculator.searchSmsGroup()` ahora busca esa lista en HubSpot Y cruza
+   sus emails junto con los `telefonos_validos` del CSV contra Metabase en una sola llamada
+   (`fetchConversionsForSmsGroup.js`, reemplaza a `fetchConversionsByPhoneFromMetabase.js`,
+   eliminado). El tamaño de muestra del Grupo SMS sigue siendo `muestra_entregados` (ReadOnly) — no
+   vuelve a depender de HubSpot.
+2. `metabaseService.js` ganó `fetchConversionsFromWarehouseCombined()` (reemplaza a
+   `fetchConversionsFromWarehouseByPhone()`, eliminada): resuelve `customer_id` de
+   `silver.customers` por `(email OR phone)` en dos rondas de lotes deduplicadas en memoria, y
+   agrega `silver.sales` por esos IDs. `/api/metabase/conversions` distingue el modo por la
+   presencia de `phones` en el body.
+3. Deméter: migración `004_processed_campaigns_unique_by_name.sql` corrige el `unique constraint` de
+   `sms_processed_campaigns` — pasa de `(campaign_name, country_value)` a solo `campaign_name`
+   (identificador único real de negocio = `Communication Name` del CSV). `processedCampaignsService.js`
+   actualizado (`onConflict: 'campaign_name'`).
+
+**Pendiente, a cargo del usuario (se suma a lo ya pendiente de la sesión anterior):**
+- Aplicar también la migración `004_processed_campaigns_unique_by_name.sql` (después de la 003).
+- Volver a probar el flujo del Grupo SMS end-to-end (CSV + HubSpot + Metabase) una vez desplegado —
+  no se pudo probar desde este entorno.

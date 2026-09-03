@@ -6,12 +6,16 @@ import { round2 } from '../../utils/format.js';
 // PIVOTE DE FASE 2.1 (ver ADR 0008): "Nombre de la campaña" pasa de texto
 // libre a un <select> poblado con las campañas que Éter agrupó del CSV
 // de Workingbits (cargado en /upload). Elegir una campaña autocompleta
-// fecha, mensaje y tipo de evento; el Grupo SMS ya no pide un nombre de
-// lista de HubSpot — su tamaño de muestra es un campo ReadOnly
-// ("Tamaño de muestra real (Entregados)") tomado de `muestra_entregados`,
-// y su botón "Buscar" cruza los teléfonos de la campaña directo contra
-// Metabase. El Grupo Control NO cambió: sigue usando
-// SegmentLookupField (nombre de lista de HubSpot) como antes.
+// fecha, mensaje y tipo de evento; el tamaño de muestra del Grupo SMS es
+// un campo ReadOnly ("Tamaño de muestra real (Entregados)") tomado de
+// `muestra_entregados`, y nunca vuelve a ser editable.
+//
+// CORRECCIÓN DE FASE 2.2 (ver ADR 0009): el campo "Nombre exacto de la
+// lista en HubSpot" + botón "Buscar" (SegmentLookupField) VUELVEN para el
+// Grupo SMS — el CSV solo trae teléfonos, pero el cruce contra Metabase
+// también necesita los emails de esa lista de HubSpot (ver
+// useCampaignCalculator.searchSmsGroup). El Grupo Control sigue usando el
+// mismo componente, sin cambios.
 export default function CampaignForm({ calc }) {
   const {
     form,
@@ -131,26 +135,19 @@ export default function CampaignForm({ calc }) {
 
       <div className="mt-6 border-t border-ink-300/40 pt-4">
         <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-500">Grupo SMS</h3>
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-ink-400">
-            {selectedProcessedCampaign
-              ? `${phoneCount} teléfonos entregados listos para cruzar contra Metabase.`
-              : 'Elige primero una campaña arriba.'}
-          </p>
-          <button
-            type="button"
-            onClick={searchSmsGroup}
-            disabled={smsSearch.loading || !selectedProcessedCampaign}
-            className="whitespace-nowrap rounded-lg bg-brand-indigo px-4 py-2 text-sm font-medium text-white hover:bg-brand-indigo/90 disabled:opacity-50"
-          >
-            {smsSearch.loading ? 'Buscando en Metabase...' : 'Buscar'}
-          </button>
-        </div>
-        {smsSearch.error ? <p className="mt-1 text-xs text-state-danger">{smsSearch.error}</p> : null}
-        <p className="mt-1 text-xs italic text-ink-400">
-          Conversiones y ventas: reales, vía Metabase, cruzando los teléfonos entregados del CSV
-          (Éter/Hermes). Ya no requiere buscar un segmento en HubSpot.
+        <p className="mb-2 text-xs text-ink-400">
+          {selectedProcessedCampaign
+            ? `${phoneCount} teléfonos entregados del CSV listos para cruzar (junto con los emails de la lista de HubSpot) contra Metabase.`
+            : 'Elige primero una campaña arriba.'}
         </p>
+        <SegmentLookupField
+          segmentName={form.smsSegmentName}
+          onSegmentNameChange={(v) => setField('smsSegmentName', v)}
+          onSearch={searchSmsGroup}
+          loading={smsSearch.loading}
+          error={smsSearch.error}
+          disabled={!selectedProcessedCampaign}
+        />
         <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-3">
           <ReadOnlyField label="Tamaño de muestra real (Entregados)" value={form.smsN} />
           <NumberField label="Conversiones SMS" value={form.smsC} onChange={(v) => setField('smsC', v)} />

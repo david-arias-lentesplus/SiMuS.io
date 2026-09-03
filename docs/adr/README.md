@@ -17,3 +17,4 @@ Registro de decisiones de arquitectura relevantes o irreversibles del proyecto S
 - [0006 — Cruce de conversiones vía Metabase, implementado en Hermes](0006-metabase-cruce-conversiones-via-hermes.md)
 - [0007 — Fase 3: autenticación, roles y countries_config](0007-fase3-auth-roles-countries-config.md)
 - [0008 — Ingesta de CSV de Workingbits (Éter) y cruce por teléfono en el Grupo SMS](0008-ingesta-csv-workingbits-y-cruce-por-telefono.md)
+- [0009 — Restauración de HubSpot en el Grupo SMS y upsert por Communication Name](0009-restauracion-hubspot-grupo-sms-y-upsert-por-nombre.md)
