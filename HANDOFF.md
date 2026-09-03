@@ -632,3 +632,25 @@ El usuario corrigió dos huecos del pivote de Fase 2.1 (ver ADR 0009):
 - Aplicar también la migración `004_processed_campaigns_unique_by_name.sql` (después de la 003).
 - Volver a probar el flujo del Grupo SMS end-to-end (CSV + HubSpot + Metabase) una vez desplegado —
   no se pudo probar desde este entorno.
+
+### Sesión 2026-09-03, noche (fix — row_limit inválido en el cruce combinado del Grupo SMS)
+
+El usuario probó el flujo real del Grupo SMS (HubSpot + CSV + Metabase) tras las correcciones de
+Fase 2.2 y obtuvo el error `Invalid row_limit parameter: 800. Must be between 1 and 500.` desde el
+servidor MCP de Metabase. Causa: `collectMatchedCustomerIds()` (agregada en ADR 0009) pedía UNA FILA
+POR `customer_id` que matchea, y usaba el mismo `BATCH_SIZE` (800, pensado para el límite de
+*payload* de las consultas agregadas) como `row_limit` — pero el servidor real limita `row_limit` a
+un máximo de 500, distinto del límite de tamaño de payload.
+
+Fix en `src/agents/hermes/services/metabaseService.js`: nueva constante `MAX_ROW_LIMIT = 500`
+(documentada como el límite real, descubierto en producción) y `CUSTOMER_LOOKUP_BATCH_SIZE = 500`
+(en vez de reusar `BATCH_SIZE`) para los lotes de email/teléfono de `collectMatchedCustomerIds` —
+así el lote de entrada nunca puede producir más filas de las que el servidor deja pedir.
+`runRowsQuery()` también aplica un `Math.min(rowLimit, MAX_ROW_LIMIT)` como red de seguridad,
+independiente de qué le pase el llamador. Las consultas AGREGADAS (siempre devuelven 1 fila:
+`fetchConversionsFromWarehouse`, `aggregateSalesForCustomerIds`) no se vieron afectadas — siguen
+usando `BATCH_SIZE = 800` para el tamaño del `IN (...)`, que es un límite de payload distinto y no
+choca con `row_limit`.
+
+No se pudo volver a probar en vivo desde este entorno — pendiente que el usuario confirme que el
+Grupo SMS ya cruza correctamente tras este fix.

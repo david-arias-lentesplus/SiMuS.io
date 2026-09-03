@@ -87,11 +87,32 @@ const CUSTOMERS_TABLE = 'silver.customers';
 const REVENUE_COLUMN = 'gmv_usd';
 
 // Tamaño máximo de emails/teléfonos por consulta al MCP de Metabase — ver
-// nota "FIX 413 PAYLOAD TOO LARGE" arriba.
+// nota "FIX 413 PAYLOAD TOO LARGE" arriba. Válido para consultas
+// AGREGADAS (siempre devuelven 1 sola fila, sin importar cuántos valores
+// tenga el IN) como buildEmailSalesQuery/buildSalesByCustomerIdsQuery.
 const BATCH_SIZE = 800;
 // customer_id son bigint cortos (ej. "1048576"): un lote mucho más grande
-// que BATCH_SIZE sigue muy por debajo del límite de payload medido.
+// que BATCH_SIZE sigue muy por debajo del límite de payload medido —
+// también es una consulta agregada (1 fila), no está sujeto al límite de
+// row_limit de abajo.
 const CUSTOMER_ID_BATCH_SIZE = 3000;
+
+// Límite REAL de `row_limit` del servidor MCP de Metabase en producción,
+// descubierto en la sesión "ERROR AL BUSCAR EN HUBSPOT Y METABASE" al
+// probar el cruce combinado del Grupo SMS:
+//   "Invalid row_limit parameter: 800. Must be between 1 and 500."
+// A diferencia de las consultas agregadas de arriba (siempre 1 fila,
+// nunca chocan con este límite), `collectMatchedCustomerIds` pide UNA
+// FILA POR customer_id que matchea — con emails/teléfonos reales, un
+// lote de 800 valores puede devolver más de 500 customer_id distintos, lo
+// que además de violar el límite del servidor truncaría el resultado sin
+// avisar. Por eso esas consultas usan un lote más chico
+// (CUSTOMER_LOOKUP_BATCH_SIZE), acotado también por este límite de filas.
+const MAX_ROW_LIMIT = 500;
+// Lote para las consultas de "resolver customer_id por email/teléfono"
+// (collectMatchedCustomerIds): igual al límite de filas del servidor,
+// para que un lote nunca pueda devolver más filas de las que puede pedir.
+const CUSTOMER_LOOKUP_BATCH_SIZE = MAX_ROW_LIMIT;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Un teléfono ya limpio (ver src/agents/eter/utils/cleanPhoneNumber.js)
@@ -301,7 +322,7 @@ async function callMcpTool(toolName, args, config) {
 
 /** Ejecuta una query que devuelve UNA fila agregada ({ conversions, total_sales }). */
 async function runAggregateQuery(query, config) {
-  const result = await callMcpTool('execute', { database_id: config.databaseId, query, row_limit: 5 }, config);
+  const result = await callMcpTool('execute', { database_id: config.databaseId, query, row_limit: Math.min(5, MAX_ROW_LIMIT) }, config);
   if (result?.success === false) {
     throw new MetabaseApiError('La consulta a Metabase no se ejecutó correctamente.', 502);
   }
@@ -314,7 +335,10 @@ async function runAggregateQuery(query, config) {
 
 /** Ejecuta una query que devuelve VARIAS filas (ej. una columna customer_id) y las aplana a un array. */
 async function runRowsQuery(query, config, rowLimit) {
-  const result = await callMcpTool('execute', { database_id: config.databaseId, query, row_limit: rowLimit }, config);
+  // Nunca se envía un row_limit por encima de lo que el servidor acepta,
+  // sin importar qué le pase el llamador (ver MAX_ROW_LIMIT arriba).
+  const safeRowLimit = Math.max(1, Math.min(rowLimit, MAX_ROW_LIMIT));
+  const result = await callMcpTool('execute', { database_id: config.databaseId, query, row_limit: safeRowLimit }, config);
   if (result?.success === false) {
     throw new MetabaseApiError('La consulta a Metabase no se ejecutó correctamente.', 502);
   }
@@ -369,17 +393,21 @@ export async function fetchConversionsFromWarehouse({ emails, businessUnit, send
 async function collectMatchedCustomerIds({ emails, phones, businessUnit }, config) {
   const ids = new Set();
 
-  for (const emailBatch of chunkArray(emails, BATCH_SIZE)) {
+  // Lotes de CUSTOMER_LOOKUP_BATCH_SIZE (500, no BATCH_SIZE/800): cada
+  // valor de un lote puede matchear un customer_id distinto, así que el
+  // lote de entrada nunca puede ser mayor que el límite de filas que el
+  // servidor deja pedir — ver nota de MAX_ROW_LIMIT arriba.
+  for (const emailBatch of chunkArray(emails, CUSTOMER_LOOKUP_BATCH_SIZE)) {
     const query = buildCustomersByEmailQuery({ emails: emailBatch, businessUnit });
-    const rows = await runRowsQuery(query, config, BATCH_SIZE);
+    const rows = await runRowsQuery(query, config, CUSTOMER_LOOKUP_BATCH_SIZE);
     for (const row of rows) {
       if (row?.customer_id != null) ids.add(String(row.customer_id));
     }
   }
 
-  for (const phoneBatch of chunkArray(phones, BATCH_SIZE)) {
+  for (const phoneBatch of chunkArray(phones, CUSTOMER_LOOKUP_BATCH_SIZE)) {
     const query = buildCustomersByPhoneQuery({ phones: phoneBatch, businessUnit });
-    const rows = await runRowsQuery(query, config, BATCH_SIZE);
+    const rows = await runRowsQuery(query, config, CUSTOMER_LOOKUP_BATCH_SIZE);
     for (const row of rows) {
       if (row?.customer_id != null) ids.add(String(row.customer_id));
     }
