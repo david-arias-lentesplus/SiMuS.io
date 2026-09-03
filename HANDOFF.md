@@ -740,3 +740,27 @@ solo-email (sin `join`) devuelven ambas el resultado esperado (`sale_id=3607600,
 **Lección**: al agregar un `join` a una consulta que reutiliza cláusulas WHERE compartidas escritas
 para una sola tabla, revisar si la tabla nueva tiene columnas con el mismo nombre — no asumirlo,
 verificar contra `information_schema.columns` como se hizo aquí.
+
+### Sesión 2026-09-03, madrugada (3) — aclaración de negocio: HubSpot y CSV NO se relacionan entre sí
+
+El usuario preguntó cómo se relacionan la lista de HubSpot y el CSV de Workingbits, y señaló
+correctamente que si no tienen nada en común, no hace falta pasar por `silver.customers` para todo.
+
+**Respuesta de diseño**: NO hay ninguna relación técnica entre ambos — se corresponden solo por
+convención humana (el usuario escribe a mano el nombre de la lista de HubSpot que sabe que
+corresponde a la misma campaña del CSV). Por eso el cruce es un `OR` de dos identificadores
+independientes, no un join entre HubSpot y el CSV.
+
+De ahí surgió una inconsistencia real: la consulta combinada matcheaba el lado de email contra
+`customers.email` (el email del PERFIL del cliente en el Data Warehouse) en vez de `sales.email` (el
+email real usado en esa venta puntual — el mismo criterio que ya usa el Grupo Control). El usuario
+confirmó, con `AskUserQuestion`, que el email debe matchear contra `silver.sales.email`, igual que el
+Grupo Control.
+
+**Fix en `buildCombinedSalesQuery`**: el lado de email ahora matchea `s.email` (columna propia de
+`silver.sales`, sin depender de `silver.customers`); el lado de teléfono sigue necesitando
+`silver.customers.phone` porque `silver.sales` no tiene columna de teléfono. El `join` pasó de
+`join` a `left join` para no descartar ventas sin fila correspondiente en `silver.customers` — esas
+ventas todavía pueden matchear por `s.email`, solo nunca matchean por teléfono. Validado de nuevo
+contra datos reales vía `mcp__livo_metabase__execute` (mismo resultado esperado: `sale_id=3607600,
+revenue=4.35`), `node --check` confirma sintaxis válida.

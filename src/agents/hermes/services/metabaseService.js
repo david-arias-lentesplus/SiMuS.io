@@ -270,17 +270,37 @@ function buildEmailSalesQuery({ emails, businessUnit, sendDate }) {
   `.trim();
 }
 
-/** Construye la consulta combinada email/phone contra silver.sales JOIN silver.customers — ver "REDISEÑO DE RENDIMIENTO". */
+/**
+ * Construye la consulta combinada email/phone contra silver.sales — ver
+ * "REDISEÑO DE RENDIMIENTO" más arriba para el rediseño de arrancar
+ * siempre desde silver.sales.
+ *
+ * CORRECCIÓN (sesión "como relacionas la base de hubspot con la que se
+ * carga en el csv"): el email de HubSpot y el teléfono del CSV NO se
+ * relacionan entre sí — son dos identificadores independientes de la
+ * MISMA audiencia (el nombre de la lista de HubSpot y el CSV se
+ * corresponden solo por convención humana, no por ningún ID compartido
+ * verificado en código), y cada uno se busca por separado con `OR`. Por
+ * eso el email se matchea contra `s.email` (la propia columna de
+ * silver.sales, la venta real — mismo criterio que ya usa
+ * `buildEmailSalesQuery` para el Grupo Control) y NO contra
+ * `customers.email` (el email del perfil del cliente en el Data
+ * Warehouse, que puede no coincidir con el email real usado en una venta
+ * puntual). El teléfono SÍ requiere `silver.customers` porque
+ * `silver.sales` no tiene columna de teléfono — es el único de los dos
+ * casos que necesita el `join`.
+ *
+ * Se usa `left join` (no `join`) para no descartar ventas cuyo
+ * `customer_id` no tenga fila en `silver.customers`: esas ventas siguen
+ * pudiendo matchear por `s.email`, y simplemente nunca matchean por
+ * teléfono (columna `c.phone` queda `null`).
+ */
 function buildCombinedSalesQuery({ emails, phones, businessUnit, sendDate }) {
   const { startDate, endDateExclusive } = attributionWindow(sendDate);
   const businessUnitLiteral = sqlStringLiteral(businessUnit);
 
-  // OR de email/teléfono, pero SIEMPRE arrancando el join desde
-  // silver.sales ya filtrada por fecha/país/estado (ver la nota grande
-  // más abajo, "REDISEÑO DE RENDIMIENTO") — nunca desde silver.customers
-  // sin acotar, que es lo que causaba los 502/timeout.
   const matchClauses = [];
-  if (emails.length > 0) matchClauses.push(`c.email in (${emails.map(sqlStringLiteral).join(', ')})`);
+  if (emails.length > 0) matchClauses.push(`s.email in (${emails.map(sqlStringLiteral).join(', ')})`);
   if (phones.length > 0) matchClauses.push(`c.phone in (${phones.map(sqlStringLiteral).join(', ')})`);
   // Nunca debería llamarse con las dos listas vacías (los callers ya lo
   // validan), pero por seguridad un match imposible es mejor que SQL roto.
@@ -289,7 +309,7 @@ function buildCombinedSalesQuery({ emails, phones, businessUnit, sendDate }) {
   return `
     select s.sale_id as sale_id, s.${REVENUE_COLUMN} as revenue
     from ${SALES_TABLE} s
-    join ${CUSTOMERS_TABLE} c on c.customer_id = s.customer_id
+    left join ${CUSTOMERS_TABLE} c on c.customer_id = s.customer_id
     where ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral, alias: 's' }).trim()}
       and (${matchClause})
   `.trim();
