@@ -764,3 +764,27 @@ Grupo Control.
 ventas todavía pueden matchear por `s.email`, solo nunca matchean por teléfono. Validado de nuevo
 contra datos reales vía `mcp__livo_metabase__execute` (mismo resultado esperado: `sale_id=3607600,
 revenue=4.35`), `node --check` confirma sintaxis válida.
+
+### Sesión 2026-09-03, madrugada (4) — ADR 0011: el Grupo SMS deja de relacionar silver.customers
+
+El usuario reportó que, pese al rediseño de rendimiento anterior (ADR 0010), "seguimos teniendo
+errores y tiempos de carga muy largos, no como antes", y pidió explícitamente: "que la consulta del
+grupo sms funcione igual que grupo de control, no relacionar con silver.customer y asi podemos
+agilizar un poco esta consulta".
+
+**Decisión**: `fetchConversionsFromWarehouseCombined` (Grupo SMS) ahora delega DIRECTAMENTE en
+`fetchConversionsFromWarehouse` (Grupo Control) — mismo cruce, solo por `email` contra
+`silver.sales`, sin ningún `join`. Los `phones` del CSV de Éter se siguen recibiendo por
+compatibilidad de firma pero se ignoran para este cruce (el tamaño de muestra del Grupo SMS,
+`muestra_entregados`, NO cambia — solo deja de usarse teléfono para el cruce de conversiones).
+
+**Código eliminado** (dead code tras el cambio): `buildCombinedSalesQuery`, `sanitizePhones`,
+`PHONE_RE`, `runRowsQuery`, constante `CUSTOMERS_TABLE`. `node --check` confirma sintaxis válida.
+
+**Trade-off aceptado explícitamente por el usuario**: un cliente que en `silver.customers` matchee
+SOLO por teléfono (no por email de la lista de HubSpot) ya NO se cuenta como conversión del Grupo
+SMS. Ver ADR 0011 para el detalle completo.
+
+No se pudo probar en producción desde este entorno — el camino de código es idéntico al que ya usa
+el Grupo Control desde ADR 0006 (sin SQL nuevo), así que no requiere nueva validación de query.
+Pendiente que el usuario confirme que los tiempos de carga vuelven a ser normales.

@@ -108,6 +108,29 @@
 // sesión de ajuste de Metabase original (ADR 0006) — ver ADR 0009 para
 // por qué no se unificó con el flujo de `silver.customers` del Grupo SMS.
 //
+// SIMPLIFICACIÓN FINAL — SE ELIMINA EL JOIN A silver.customers (sesión
+// 2026-09-03, "seguimos teniendo errores y tiempos de carga muy largos,
+// no como antes"): el "REDISEÑO DE RENDIMIENTO" de arriba (arrancar desde
+// silver.sales y recién después hacer join a silver.customers) TODAVÍA
+// daba errores y tiempos de carga largos en producción. El usuario pidió
+// explícitamente: "que la consulta del grupo sms funcione igual que grupo
+// de control, no relacionar con silver.customer y asi podemos agilizar un
+// poco esta consulta".
+//
+// Decisión: `fetchConversionsFromWarehouseCombined` (Grupo SMS) ahora
+// delega DIRECTAMENTE en `fetchConversionsFromWarehouse` (Grupo Control)
+// — mismo cruce, solo por `email` contra `silver.sales`, SIN ningún join.
+// Los `phones` que llegan del CSV de Éter se reciben por compatibilidad
+// de firma pero se ignoran para este cruce (el tamaño de muestra del
+// Grupo SMS sigue siendo `muestra_entregados`, eso no cambia — solo el
+// cruce de CONVERSIONES contra Metabase deja de usar teléfono).
+// `buildCombinedSalesQuery`, `sanitizePhones`, `runRowsQuery` y la
+// constante `CUSTOMERS_TABLE` se ELIMINARON de este archivo (código
+// muerto). Ver ADR 0011 para el detalle completo, incluido el trade-off
+// aceptado explícitamente por el usuario: un cliente que solo matchee por
+// teléfono (no por email, o con un email que HubSpot no tenga en la
+// lista) ya NO se cuenta como conversión del Grupo SMS.
+//
 // Contrato de negocio (verificado contra el esquema real de
 // `silver.sales`/`silver.customers`, confirmado con el conector
 // `mcp__livo_metabase__*` antes de escribir este código):
@@ -134,15 +157,12 @@ export class MetabaseApiError extends Error {
 }
 
 const SALES_TABLE = 'silver.sales';
-const CUSTOMERS_TABLE = 'silver.customers';
 const REVENUE_COLUMN = 'gmv_usd';
 
-// Tamaño máximo de emails/teléfonos por consulta al MCP de Metabase — ver
-// nota "FIX 413 PAYLOAD TOO LARGE" arriba. Para buildEmailSalesQuery
-// (agregada, 1 fila) esto es el único límite relevante. Para
-// buildCombinedSalesQuery (devuelve filas, ver "REDISEÑO DE RENDIMIENTO")
-// también se usa como umbral para decidir si hace falta trocear
-// emails/phones en más de una consulta.
+// Tamaño máximo de emails por consulta al MCP de Metabase — ver nota
+// "FIX 413 PAYLOAD TOO LARGE" arriba. Usado por buildEmailSalesQuery
+// (consulta agregada, 1 fila), para ambos flujos (Grupo Control y Grupo
+// SMS, ver "SIMPLIFICACIÓN FINAL" — ambos llaman a la misma función).
 const BATCH_SIZE = 800;
 
 // Límite REAL de `row_limit` del servidor MCP de Metabase en producción,
@@ -155,9 +175,6 @@ const BATCH_SIZE = 800;
 const MAX_ROW_LIMIT = 500;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-// Un teléfono ya limpio (ver src/agents/eter/utils/cleanPhoneNumber.js)
-// es solo dígitos; se exige un mínimo razonable para descartar basura.
-const PHONE_RE = /^\d{6,15}$/;
 // Whitelist estricta de business_unit válidos (ver countries.js) — nunca
 // se interpola en el SQL un valor que no venga de esta lista.
 const VALID_BUSINESS_UNITS = new Set(['CO', 'AR', 'CL', 'MX', 'BR', 'LV']);
@@ -188,17 +205,6 @@ function sanitizeEmails(emails) {
     if (typeof raw !== 'string') continue;
     const email = raw.trim().toLowerCase();
     if (email && EMAIL_RE.test(email)) seen.add(email);
-  }
-  return Array.from(seen);
-}
-
-/** Valida/normaliza teléfonos ya limpios de indicativo (ver cleanPhoneNumber.js). */
-function sanitizePhones(phones) {
-  const seen = new Set();
-  for (const raw of Array.isArray(phones) ? phones : []) {
-    if (typeof raw !== 'string' && typeof raw !== 'number') continue;
-    const phone = String(raw).trim();
-    if (phone && PHONE_RE.test(phone)) seen.add(phone);
   }
   return Array.from(seen);
 }
@@ -267,51 +273,6 @@ function buildEmailSalesQuery({ emails, businessUnit, sendDate }) {
     from ${SALES_TABLE}
     where email in (${emailList})
       and ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral, alias: '' }).trim()}
-  `.trim();
-}
-
-/**
- * Construye la consulta combinada email/phone contra silver.sales — ver
- * "REDISEÑO DE RENDIMIENTO" más arriba para el rediseño de arrancar
- * siempre desde silver.sales.
- *
- * CORRECCIÓN (sesión "como relacionas la base de hubspot con la que se
- * carga en el csv"): el email de HubSpot y el teléfono del CSV NO se
- * relacionan entre sí — son dos identificadores independientes de la
- * MISMA audiencia (el nombre de la lista de HubSpot y el CSV se
- * corresponden solo por convención humana, no por ningún ID compartido
- * verificado en código), y cada uno se busca por separado con `OR`. Por
- * eso el email se matchea contra `s.email` (la propia columna de
- * silver.sales, la venta real — mismo criterio que ya usa
- * `buildEmailSalesQuery` para el Grupo Control) y NO contra
- * `customers.email` (el email del perfil del cliente en el Data
- * Warehouse, que puede no coincidir con el email real usado en una venta
- * puntual). El teléfono SÍ requiere `silver.customers` porque
- * `silver.sales` no tiene columna de teléfono — es el único de los dos
- * casos que necesita el `join`.
- *
- * Se usa `left join` (no `join`) para no descartar ventas cuyo
- * `customer_id` no tenga fila en `silver.customers`: esas ventas siguen
- * pudiendo matchear por `s.email`, y simplemente nunca matchean por
- * teléfono (columna `c.phone` queda `null`).
- */
-function buildCombinedSalesQuery({ emails, phones, businessUnit, sendDate }) {
-  const { startDate, endDateExclusive } = attributionWindow(sendDate);
-  const businessUnitLiteral = sqlStringLiteral(businessUnit);
-
-  const matchClauses = [];
-  if (emails.length > 0) matchClauses.push(`s.email in (${emails.map(sqlStringLiteral).join(', ')})`);
-  if (phones.length > 0) matchClauses.push(`c.phone in (${phones.map(sqlStringLiteral).join(', ')})`);
-  // Nunca debería llamarse con las dos listas vacías (los callers ya lo
-  // validan), pero por seguridad un match imposible es mejor que SQL roto.
-  const matchClause = matchClauses.length > 0 ? matchClauses.join(' or ') : 'false';
-
-  return `
-    select s.sale_id as sale_id, s.${REVENUE_COLUMN} as revenue
-    from ${SALES_TABLE} s
-    left join ${CUSTOMERS_TABLE} c on c.customer_id = s.customer_id
-    where ${sharedSalesWhere({ startDate, endDateExclusive, businessUnitLiteral, alias: 's' }).trim()}
-      and (${matchClause})
   `.trim();
 }
 
@@ -432,21 +393,6 @@ async function runAggregateQuery(query, config) {
   };
 }
 
-/** Ejecuta una query que devuelve VARIAS filas (ej. una columna customer_id) y las aplana a un array. */
-async function runRowsQuery(query, config, rowLimit) {
-  // Nunca se envía un row_limit por encima de lo que el servidor acepta,
-  // sin importar qué le pase el llamador (ver MAX_ROW_LIMIT arriba).
-  const safeRowLimit = Math.max(1, Math.min(rowLimit, MAX_ROW_LIMIT));
-  const result = await callMcpTool('execute', { database_id: config.databaseId, query, row_limit: safeRowLimit }, config);
-  if (result?.success === false) {
-    throw new MetabaseApiError('La consulta a Metabase no se ejecutó correctamente.', 502);
-  }
-  const dataObj = result?.data ?? {};
-  return Object.keys(dataObj)
-    .sort((a, b) => Number(a) - Number(b))
-    .map((key) => dataObj[key]);
-}
-
 function assertBusinessUnitAndDate(businessUnit, sendDate) {
   if (!businessUnit || !VALID_BUSINESS_UNITS.has(businessUnit)) {
     throw new MetabaseApiError(`"businessUnit" inválido: ${businessUnit}`, 400);
@@ -490,75 +436,39 @@ export async function fetchConversionsFromWarehouse({ emails, businessUnit, send
 }
 
 /**
- * Punto de entrada COMBINADO (Grupo SMS, "CORRECCIÓN FASE 2.2", rediseñado
- * en la sesión "REDISEÑO DE RENDIMIENTO" — ver nota grande al inicio del
- * archivo): recibe los emails que Hermes ya trajo de HubSpot para la lista
- * que el usuario escribió en el Grupo SMS Y los `telefonos_validos` que
- * Éter extrajo del CSV de Workingbits para la campaña elegida, y hace el
- * match combinado `(email IN (...) OR phone IN (...))` SIEMPRE arrancando
- * desde `silver.sales` ya acotada por fecha/país/estado — ver
- * `buildCombinedSalesQuery`. Ya NO resuelve `customer_id` en una fase
- * separada contra `silver.customers` sin acotar (ese diseño de dos fases,
- * de ADR 0009, causaba 502/Terminated por escanear una tabla de millones
- * de filas sin ningún filtro de fecha).
+ * Punto de entrada COMBINADO (Grupo SMS) — SIMPLIFICADO (sesión "seguimos
+ * teniendo errores y tiempos de carga muy largos", instrucción explícita
+ * del usuario: "que la consulta del grupo sms funcione igual que grupo de
+ * control, no relacionar con silver.customer y asi podemos agilizar un
+ * poco esta consulta").
  *
- * Deduplica por `sale_id` (no por `customer_id`) usando un Map en memoria:
- * si el mismo cliente matchea por email Y por teléfono en distintos lotes,
- * la misma venta puede aparecer más de una vez entre los resultados de los
- * distintos lotes, y el Map se encarga de contarla una sola vez.
+ * Los dos rediseños anteriores (ADR 0009 en dos fases, y su reemplazo de
+ * "REDISEÑO DE RENDIMIENTO" con `buildCombinedSalesQuery` + `join`/`left
+ * join` a `silver.customers`) seguían dando errores y tiempos de carga
+ * largos en producción — el join a `silver.customers`, aun partiendo de
+ * `silver.sales` ya acotada, seguía siendo más lento de lo aceptable. El
+ * usuario decidió explícitamente PRIORIZAR VELOCIDAD sobre el match por
+ * teléfono: el Grupo SMS ahora consulta `silver.sales` EXACTAMENTE igual
+ * que el Grupo Control (`fetchConversionsFromWarehouse`, solo por
+ * `email`, sin ningún `join`) y los `phones` que llegan del CSV de Éter
+ * se ignoran por completo para este cruce.
+ *
+ * `buildCombinedSalesQuery`, `sanitizePhones`, `runRowsQuery` y la
+ * constante `CUSTOMERS_TABLE` (todo el mecanismo que dependía de
+ * `silver.customers`) se ELIMINARON de este archivo — código muerto tras
+ * este cambio. Ver ADR 0011 para el detalle completo y el trade-off
+ * aceptado: un cliente que solo tenga coincidencia por teléfono (sin
+ * email o con email que no matchea) en `silver.customers`, y que la
+ * lista de HubSpot no lo incluya, YA NO se contará en el Grupo SMS.
+ *
  * @param {{emails: string[], phones: string[], businessUnit: string, sendDate: string}} input
  * @returns {Promise<{conversions: number, totalSales: number}>}
  */
 export async function fetchConversionsFromWarehouseCombined({ emails, phones, businessUnit, sendDate }) {
-  const config = metabaseConfig();
-  const cleanEmails = sanitizeEmails(emails);
-  const cleanPhones = sanitizePhones(phones);
-  if (cleanEmails.length === 0 && cleanPhones.length === 0) {
-    return { conversions: 0, totalSales: 0 }; // sin emails ni teléfonos válidos: resultado válido en cero
-  }
-  assertBusinessUnitAndDate(businessUnit, sendDate);
-
-  // Caso común: ambas listas caben juntas en un solo lote (BATCH_SIZE,
-  // límite de payload) — una sola consulta con el OR completo. Caso
-  // grande: se trocea cada lista POR SEPARADO (cada query solo lleva UNA
-  // de las dos condiciones) para no armar un IN gigante que exceda el
-  // límite de payload; el dedupe por sale_id de abajo evita doble conteo
-  // si una misma venta aparece en más de un lote.
-  const totalCount = cleanEmails.length + cleanPhones.length;
-  const queries = [];
-  if (totalCount <= BATCH_SIZE) {
-    queries.push(buildCombinedSalesQuery({ emails: cleanEmails, phones: cleanPhones, businessUnit, sendDate }));
-  } else {
-    for (const emailBatch of chunkArray(cleanEmails, BATCH_SIZE)) {
-      queries.push(buildCombinedSalesQuery({ emails: emailBatch, phones: [], businessUnit, sendDate }));
-    }
-    for (const phoneBatch of chunkArray(cleanPhones, BATCH_SIZE)) {
-      queries.push(buildCombinedSalesQuery({ emails: [], phones: phoneBatch, businessUnit, sendDate }));
-    }
-  }
-
-  // En paralelo (mismo motivo documentado en fetchConversionsFromWarehouse
-  // arriba): cada lote es independiente, y disparar todos a la vez evita
-  // acercarse al límite de ejecución de la función serverless.
-  //
-  // Riesgo aceptado y documentado (ver "REDISEÑO DE RENDIMIENTO"): a
-  // diferencia de una consulta agregada (siempre 1 fila), esto pide filas
-  // individuales de venta, sujeto a MAX_ROW_LIMIT (500) por lote. Si un
-  // solo lote matchea más de 500 ventas distintas en la ventana de 7 días,
-  // el resultado se trunca sin avisar. Se considera improbable para
-  // volúmenes típicos de conversión de una campaña de SMS en 7 días, pero
-  // queda como limitación conocida a vigilar si el volumen crece.
-  const batchRowSets = await Promise.all(queries.map((q) => runRowsQuery(q, config, MAX_ROW_LIMIT)));
-
-  const salesById = new Map(); // dedupe por sale_id — evita doble conteo entre lotes
-  for (const rows of batchRowSets) {
-    for (const row of rows) {
-      if (row?.sale_id == null) continue;
-      salesById.set(String(row.sale_id), Number(row.revenue) || 0);
-    }
-  }
-
-  let totalSales = 0;
-  for (const revenue of salesById.values()) totalSales += revenue;
-  return { conversions: salesById.size, totalSales };
+  // `phones` se recibe por compatibilidad con el llamador (Éter sigue
+  // extrayendo `telefonos_validos` del CSV para el tamaño de muestra del
+  // Grupo SMS, que NO cambia), pero deliberadamente no se usa en este
+  // cruce — ver nota de la función de arriba.
+  void phones;
+  return fetchConversionsFromWarehouse({ emails, businessUnit, sendDate });
 }
