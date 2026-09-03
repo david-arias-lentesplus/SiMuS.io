@@ -10,4 +10,15 @@ export const CHART_COLORS = {
   roiLineBg: 'rgba(20, 184, 166, 0.15)',
   grid: '#D3D5E0', // ink.300
   tick: '#6B6F85', // ink.500
+
+  // Fase 2.7 (2026-09-03, "COMPLETITUD DE DASHBOARD"): tokens para las dos
+  // gráficas nuevas del Dashboard Global — Evolución mensual del canal
+  // (barras de ganancia incremental + línea de ROI incremental) y
+  // Rendimiento geográfico (barras horizontales por país).
+  gainBar: '#16A34A', // state.success
+  gainBarBg: 'rgba(22, 163, 74, 0.15)',
+  roiLineIncremental: '#4F46E5', // brand.indigo
+  roiLineIncrementalBg: 'rgba(79, 70, 229, 0.15)',
+  geoBar: '#2E1A73', // blue-deep
+  geoBarBg: 'rgba(46, 26, 115, 0.85)',
 };

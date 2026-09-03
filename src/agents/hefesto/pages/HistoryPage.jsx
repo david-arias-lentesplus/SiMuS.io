@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Topbar from '../layout/Topbar.jsx';
 import { useFilteredCampaigns } from '../../minerva/hooks/useFilteredCampaigns.js';
 import { useCampaignStore } from '../../minerva/store/useCampaignStore.js';
@@ -33,8 +34,17 @@ const PAGE_SIZE = 20;
 // "Fecha" (`created_at`, cuándo se calculó/guardó el registro) — Deméter
 // ya traía `send_date` con el `select('*')` de fetchCampaigns(), no hizo
 // falta tocar la query. Si `send_date` es null se muestra "N/A".
+//
+// Fase 2.7 (2026-09-03, "COMPLETITUD DE DASHBOARD..."): se agregó la
+// columna "Acciones" con el botón "Ver" (icono de ojo) junto al de
+// "Eliminar" — a diferencia de "Eliminar" (admin-only), "Ver" navega a
+// /reporte/:id, que no exige admin (ver AppRoutes.jsx, ADR 0015), así que
+// la columna "Acciones" ahora se renderiza SIEMPRE (antes el `<th>`/`<td>`
+// de acciones solo existía para admin, porque lo único que había ahí era
+// "Eliminar").
 export default function HistoryPage() {
   const { campaigns, loading, error, remove, removeAll } = useFilteredCampaigns();
+  const navigate = useNavigate();
   const filters = useCampaignStore((s) => s.filters);
   const setSearch = useCampaignStore((s) => s.setSearch);
   const sort = useCampaignStore((s) => s.sort);
@@ -171,7 +181,7 @@ export default function HistoryPage() {
                     <SortableTh col="roi_real" sort={sort} onSort={setSort}>ROI</SortableTh>
                     <SortableTh col="total_sms_cost" sort={sort} onSort={setSort}>Costo</SortableTh>
                     <th className="py-2 pr-3">Mensaje</th>
-                    {isAdmin ? <th className="py-2" /> : null}
+                    <th className="py-2 text-right">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -201,18 +211,28 @@ export default function HistoryPage() {
                         <td className="max-w-[220px] truncate py-2 pr-3 text-ink-400" title={r.sms_message || ''}>
                           {r.sms_message || '-'}
                         </td>
-                        {isAdmin ? (
-                          <td className="py-2 text-right">
+                        <td className="py-2 text-right">
+                          <div className="flex justify-end gap-2">
                             <button
                               type="button"
-                              onClick={() => handleDelete(r.id, r.campaign_name)}
-                              disabled={busyId === r.id}
-                              className="rounded-lg px-2 py-1 text-xs text-state-danger hover:bg-state-danger/10 disabled:opacity-40"
+                              onClick={() => navigate(`/reporte/${r.id}`)}
+                              title="Ver reporte"
+                              className="rounded-lg px-2 py-1 text-xs font-medium text-ink-500 hover:bg-surface hover:text-brand-teal"
                             >
-                              {busyId === r.id ? '...' : 'Eliminar'}
+                              Ver
                             </button>
-                          </td>
-                        ) : null}
+                            {isAdmin ? (
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(r.id, r.campaign_name)}
+                                disabled={busyId === r.id}
+                                className="rounded-lg px-2 py-1 text-xs text-state-danger hover:bg-state-danger/10 disabled:opacity-40"
+                              >
+                                {busyId === r.id ? '...' : 'Eliminar'}
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
                       </tr>
                     );
                   })}

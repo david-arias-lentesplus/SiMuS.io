@@ -53,4 +53,35 @@ export const useCampaignStore = create((set) => ({
   pendingProcessedCampaignId: null,
   setPendingProcessedCampaignId: (id) => set({ pendingProcessedCampaignId: id }),
   consumePendingProcessedCampaignId: () => set({ pendingProcessedCampaignId: null }),
+
+  // --- Filtros del Dashboard Global (Fase 2.7, "COMPLETITUD DE
+  // DASHBOARD, GRÁFICAS Y FILTROS REACTIVOS") ---
+  // Deliberadamente separados de `filters` de arriba: `filters` es del
+  // Histórico (búsqueda de texto + el `dateRange`/`country` legacy que
+  // ninguna UI llegó a exponer todavía) y sus consumidores
+  // (HistoryPage/useCampaignCalculator vía useFilteredCampaigns) no deben
+  // verse afectados si el usuario filtra el Dashboard por fecha/evento —
+  // son vistas distintas con necesidades de filtro distintas. Los
+  // setters escriben directo (auto-aplican al cambiar, sin un botón
+  // "Aplicar" intermedio) porque `useSmsCampaigns` (Deméter) refetcha
+  // automáticamente cuando el objeto de filtros cambia de referencia
+  // (ver ese hook) — "Actualizar" en la UI dispara un `reload()` manual
+  // (para traer campañas nuevas sin cambiar filtros), "Limpiar filtros"
+  // vuelve todo a sus valores por defecto.
+  dashboardFilters: {
+    dateFrom: '',   // 'YYYY-MM-DD' o '' (sin límite inferior) — filtra send_date >= dateFrom
+    dateTo: '',     // 'YYYY-MM-DD' o '' (sin límite superior) — filtra send_date <= dateTo
+    country: 'all', // 'all' o el nombre exacto guardado en sms_campaigns.country
+    eventType: 'all', // 'all' o uno de EVENT_TYPES (sms_campaigns.event_type)
+  },
+  setDashboardDateFrom: (dateFrom) =>
+    set((state) => ({ dashboardFilters: { ...state.dashboardFilters, dateFrom } })),
+  setDashboardDateTo: (dateTo) =>
+    set((state) => ({ dashboardFilters: { ...state.dashboardFilters, dateTo } })),
+  setDashboardCountry: (country) =>
+    set((state) => ({ dashboardFilters: { ...state.dashboardFilters, country } })),
+  setDashboardEventType: (eventType) =>
+    set((state) => ({ dashboardFilters: { ...state.dashboardFilters, eventType } })),
+  clearDashboardFilters: () =>
+    set({ dashboardFilters: { dateFrom: '', dateTo: '', country: 'all', eventType: 'all' } }),
 }));

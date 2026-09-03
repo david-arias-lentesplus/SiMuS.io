@@ -1,37 +1,68 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Topbar from '../layout/Topbar.jsx';
 import KpiCard from '../components/KpiCard.jsx';
 import ChartCard from '../components/ChartCard.jsx';
-import ActivityChart from '../components/ActivityChart.jsx';
-import { useFilteredCampaigns } from '../../minerva/hooks/useFilteredCampaigns.js';
-import { useCampaignActivitySeries } from '../../minerva/hooks/useCampaignActivitySeries.js';
+import MonthlyChart from '../components/MonthlyChart.jsx';
+import GeoChart from '../components/GeoChart.jsx';
+import DashboardFilters from '../components/DashboardFilters.jsx';
+import { useDashboardCampaigns } from '../../minerva/hooks/useDashboardCampaigns.js';
+import { useCountriesConfig } from '../../demeter/hooks/useCountriesConfig.js';
+import { useCampaignStore } from '../../minerva/store/useCampaignStore.js';
+import { COUNTRIES as STATIC_COUNTRIES_FALLBACK } from '../../minerva/constants/countries.js';
+import { EVENT_TYPES } from '../../minerva/utils/detectEventType.js';
 import { fmt$, fmtPct } from '../utils/format.js';
 
-const RANKING_SIZE = 5;
-
 // Hefesto — Dashboard global. Consume únicamente hooks de "organización"
-// de Minerva (useFilteredCampaigns, useCampaignActivitySeries); nunca toca
-// Deméter/Supabase directo.
+// de Minerva; nunca toca Deméter/Supabase directo.
 //
-// Fase 2.6 (2026-09-03, "AMPLIACIÓN DE DASHBOARD, HISTÓRICO Y VISTAS DE
-// DETALLE"): se agregó la tabla "Ranking de campañas" (top 5 por ROI real,
-// ordenadas en memoria a partir de `campaigns` que ya trae
-// useFilteredCampaigns — mismo patrón que el memo de `countries` en
-// HistoryPage.jsx, no amerita un hook nuevo de Minerva solo para un
-// sort().slice()) con una columna final "Acciones" — botón "Ver" que
-// navega a /reporte/:id (CampaignReportPage.jsx), la nueva vista de
-// detalle read-only que reutiliza el diseño del reporte de la
-// Calculadora.
+// Fase 2.6 (2026-09-03): se agregó la tabla "Ranking de campañas" con
+// columna "Acciones" → botón "Ver" que navega a /reporte/:id
+// (CampaignReportPage.jsx, detalle read-only reutilizando el diseño del
+// reporte de la Calculadora).
+//
+// Fase 2.7 (2026-09-03, "COMPLETITUD DE DASHBOARD, GRÁFICAS Y FILTROS
+// REACTIVOS"): reemplaza useFilteredCampaigns()/useCampaignActivitySeries()
+// por useDashboardCampaigns() (Minerva) — ese hook YA filtra en Supabase
+// (Deméter) por lo que el usuario elija en la nueva barra de
+// DashboardFilters (Desde/Hasta/País/Tipo de evento, ver
+// useCampaignStore.dashboardFilters) y ya trae el ranking COMPLETO (sin
+// límite) y las series agregadas para las dos gráficas nuevas:
+//   - "Evolución mensual del canal" (MonthlyChart, combo barras+línea)
+//     reemplaza al ChartCard "Actividad de campañas" (ActivityChart +
+//     useCampaignActivitySeries, que se mantienen en el árbol sin uso —
+//     no se borran archivos sin confirmación explícita del usuario, ver
+//     AGENTS_SYSTEM_HANDOFF.md).
+//   - "Rendimiento geográfico" (GeoChart, barras horizontales por país).
+// El dropdown de País se puebla dinámicamente desde countries_config
+// (Supabase, vía useCountriesConfig — mismo catálogo que administra
+// /settings/countries), no de un array estático.
 export default function DashboardPage() {
-  const { stats, campaigns, loading, error } = useFilteredCampaigns();
-  const activity = useCampaignActivitySeries();
+  const { stats, ranking, monthly, byCountry, loading, error, reload } = useDashboardCampaigns();
+  const { countries: countriesConfig, loading: countriesLoading } = useCountriesConfig({ onlyActive: true });
   const navigate = useNavigate();
+  const [refreshing, setRefreshing] = useState(false);
 
-  const ranking = useMemo(
-    () => [...campaigns].sort((a, b) => (b.roi_real ?? 0) - (a.roi_real ?? 0)).slice(0, RANKING_SIZE),
-    [campaigns]
-  );
+  const dashboardFilters = useCampaignStore((s) => s.dashboardFilters);
+  const setDashboardDateFrom = useCampaignStore((s) => s.setDashboardDateFrom);
+  const setDashboardDateTo = useCampaignStore((s) => s.setDashboardDateTo);
+  const setDashboardCountry = useCampaignStore((s) => s.setDashboardCountry);
+  const setDashboardEventType = useCampaignStore((s) => s.setDashboardEventType);
+  const clearDashboardFilters = useCampaignStore((s) => s.clearDashboardFilters);
+
+  const countryOptions = useMemo(() => {
+    if (countriesConfig.length > 0) return countriesConfig.map((c) => c.country_name);
+    return STATIC_COUNTRIES_FALLBACK.map((c) => c.label);
+  }, [countriesConfig]);
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    try {
+      await reload();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   return (
     <>
@@ -40,6 +71,21 @@ export default function DashboardPage() {
         {error ? (
           <p className="text-sm text-state-danger">Error al cargar campañas: {error.message}</p>
         ) : null}
+
+        <DashboardFilters
+          filters={dashboardFilters}
+          onDateFrom={setDashboardDateFrom}
+          onDateTo={setDashboardDateTo}
+          onCountry={setDashboardCountry}
+          onEventType={setDashboardEventType}
+          onClear={clearDashboardFilters}
+          onRefresh={handleRefresh}
+          refreshing={refreshing}
+          countries={countryOptions}
+          countriesLoading={countriesLoading}
+          eventTypes={EVENT_TYPES}
+        />
+
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
           <KpiCard label="Campañas" value={loading ? '—' : stats.total} />
           <KpiCard
@@ -54,34 +100,55 @@ export default function DashboardPage() {
           />
           <KpiCard label="Países" value={loading ? '—' : stats.countries} />
         </div>
-        <ChartCard title="Actividad de campañas">
-          {activity.loading ? (
-            <div className="flex h-full items-center justify-center text-sm text-ink-400">Cargando...</div>
-          ) : activity.error ? (
-            <div className="flex h-full items-center justify-center text-sm text-state-danger">
-              Error al cargar la actividad: {activity.error.message}
-            </div>
-          ) : activity.isEmpty ? (
-            <div className="flex h-full items-center justify-center text-sm text-ink-400">
-              Todavía no hay campañas con fecha de envío para graficar.
-            </div>
-          ) : (
-            <ActivityChart labels={activity.labels} smsSent={activity.smsSent} roiAvgPct={activity.roiAvgPct} />
-          )}
-        </ChartCard>
+
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <ChartCard
+            title="Evolución mensual del canal"
+            subtitle="Ganancia incremental (barras) y ROI incremental (línea), agrupado por mes de envío"
+          >
+            {loading ? (
+              <div className="flex h-full items-center justify-center text-sm text-ink-400">Cargando...</div>
+            ) : monthly.labels.length === 0 ? (
+              <div className="flex h-full items-center justify-center text-sm text-ink-400">
+                Todavía no hay campañas con fecha de envío para graficar.
+              </div>
+            ) : (
+              <MonthlyChart labels={monthly.labels} incrementalGain={monthly.incrementalGain} roiPct={monthly.roiPct} />
+            )}
+          </ChartCard>
+
+          <ChartCard title="Rendimiento geográfico" subtitle="Ganancia incremental por país">
+            {loading ? (
+              <div className="flex h-full items-center justify-center text-sm text-ink-400">Cargando...</div>
+            ) : byCountry.labels.length === 0 ? (
+              <div className="flex h-full items-center justify-center text-sm text-ink-400">
+                Todavía no hay campañas para graficar.
+              </div>
+            ) : (
+              <GeoChart labels={byCountry.labels} incrementalGain={byCountry.incrementalGain} />
+            )}
+          </ChartCard>
+        </div>
 
         <div className="rounded-card bg-card p-6 shadow-card">
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-ink-700">
-            Ranking de campañas
-          </h2>
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-700">
+              Ranking de campañas
+            </h2>
+            <span className="text-xs text-ink-400">
+              {loading ? '' : `${ranking.length} campaña${ranking.length === 1 ? '' : 's'}`}
+            </span>
+          </div>
           {loading ? (
             <p className="text-sm text-ink-400">Cargando...</p>
           ) : ranking.length === 0 ? (
-            <p className="text-sm text-ink-400">Todavía no hay campañas calculadas.</p>
+            <p className="text-sm text-ink-400">
+              Ninguna campaña coincide con los filtros elegidos.
+            </p>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="max-h-[420px] overflow-y-auto overflow-x-auto">
               <table className="w-full min-w-[640px] text-left text-sm">
-                <thead>
+                <thead className="sticky top-0 bg-card">
                   <tr className="border-b border-ink-300/40 text-xs uppercase tracking-wide text-ink-500">
                     <th className="py-2 pr-3">Campaña</th>
                     <th className="py-2 pr-3">País</th>

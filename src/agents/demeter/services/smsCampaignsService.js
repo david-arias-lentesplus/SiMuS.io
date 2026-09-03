@@ -64,12 +64,29 @@ export function toCampaignRow(m) {
   };
 }
 
-/** Lista todas las campañas, más recientes primero. */
-export async function fetchCampaigns() {
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select('*')
-    .order('created_at', { ascending: false });
+/**
+ * Lista campañas, más recientes primero. `filters` es opcional (Fase 2.7,
+ * "FILTROS REACTIVOS" del Dashboard Global) — sin filtros se comporta
+ * exactamente igual que antes (Histórico, Calculadora). Los cuatro
+ * filtros son independientes y se aplican solo si tienen valor:
+ *   - dateFrom / dateTo: `gte`/`lte` contra `send_date` (no contra
+ *     `created_at` — el usuario quiere filtrar por cuándo se ENVIÓ la
+ *     campaña, no por cuándo se calculó/guardó, mismo criterio de la
+ *     nueva columna "Fecha Envío" del Histórico, ver ADR 0015).
+ *   - country: `eq` exacto contra `country` — coincide con
+ *     `countries_config.country_name` (mismo string que guarda
+ *     `toCampaignRow()` al calcular, ver `country: m.countryName` abajo).
+ *   - eventType: `eq` exacto contra `event_type`.
+ * @param {{ dateFrom?: string, dateTo?: string, country?: string, eventType?: string }} [filters]
+ */
+export async function fetchCampaigns(filters = {}) {
+  let query = supabase.from(TABLE).select('*');
+  if (filters.dateFrom) query = query.gte('send_date', filters.dateFrom);
+  if (filters.dateTo) query = query.lte('send_date', filters.dateTo);
+  if (filters.country && filters.country !== 'all') query = query.eq('country', filters.country);
+  if (filters.eventType && filters.eventType !== 'all') query = query.eq('event_type', filters.eventType);
+
+  const { data, error } = await query.order('created_at', { ascending: false });
   if (error) throw error;
   return data;
 }
